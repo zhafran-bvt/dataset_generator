@@ -54,7 +54,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas geopandas shapely
+          pip install pandas geopandas shapely openpyxl
 
       - name: Prepare inputs and run script
         run: |
