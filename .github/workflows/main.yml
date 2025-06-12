@@ -58,44 +58,54 @@ jobs:
 
       - name: Prepare inputs and run script
         run: |
-          # Construct input sequence based on choices
-          echo -n "${{ inputs.format_choice }}\n${{ inputs.num_columns }}\n${{ inputs.area_choice }}\n" > inputs.txt
+# Construct input sequence based on choices
+          echo -n "" > inputs.txt  # Initialize empty file
 
-          # Handle Indonesia, Japan, Vietnam (area_choice = 3, 4, 5)
-          if [ "${{ inputs.area_choice }}" = "3" ] || [ "${{ inputs.area_choice }}" = "4" ] || [ "${{ inputs.area_choice }}" = "5" ]; then
-            if [ "${{ inputs.use_land_boundaries }}" = "y" ]; then
-              echo -n "y\n${{ inputs.land_geojson_path }}\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
-              if [ -z "${{ inputs.land_geojson_path }}" ]; then
-                echo "Error: land_geojson_path is required when use_land_boundaries is 'y'" >&2
-                exit 1
-              fi
-            else
-              echo -n "n\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
-            fi
-            if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
-              echo "Error: num_rows and geometry_type are required for this area" >&2
-              exit 1
-            fi
-          # Handle Jakarta (area_choice = 1)
-          elif [ "${{ inputs.area_choice }}" = "1" ]; then
+          # Always include format_choice, num_columns, and area_choice first
+          echo "${{ inputs.format_choice }}" >> inputs.txt
+          echo "${{ inputs.num_columns }}" >> inputs.txt
+          echo "${{ inputs.area_choice }}" >> inputs.txt
+
+          # Handle conditional inputs based on area_choice
+          if [ "${{ inputs.area_choice }}" = "1" ]; then
+            echo "${{ inputs.use_districts }}" >> inputs.txt
             if [ "${{ inputs.use_districts }}" = "y" ]; then
-              echo -n "y\n${{ inputs.district_geojson_path }}\n" >> inputs.txt
+              echo "${{ inputs.district_geojson_path }}" >> inputs.txt
               if [ -z "${{ inputs.district_geojson_path }}" ]; then
                 echo "Error: district_geojson_path is required when use_districts is 'y'" >&2
                 exit 1
               fi
             else
-              echo -n "n\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+              echo "${{ inputs.num_rows }}" >> inputs.txt
+              echo "${{ inputs.geometry_type }}" >> inputs.txt
               if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
                 echo "Error: num_rows and geometry_type are required when use_districts is 'n'" >&2
                 exit 1
               fi
             fi
-          # Handle Yogyakarta (area_choice = 2)
           elif [ "${{ inputs.area_choice }}" = "2" ]; then
-            echo -n "${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+            echo "${{ inputs.num_rows }}" >> inputs.txt
+            echo "${{ inputs.geometry_type }}" >> inputs.txt
             if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
               echo "Error: num_rows and geometry_type are required for Yogyakarta" >&2
+              exit 1
+            fi
+          elif [ "${{ inputs.area_choice }}" = "3" ] || [ "${{ inputs.area_choice }}" = "4" ] || [ "${{ inputs.area_choice }}" = "5" ]; then
+            echo "${{ inputs.use_land_boundaries }}" >> inputs.txt
+            if [ "${{ inputs.use_land_boundaries }}" = "y" ]; then
+              echo "${{ inputs.land_geojson_path }}" >> inputs.txt
+              if [ -z "${{ inputs.land_geojson_path }}" ]; then
+                echo "Error: land_geojson_path is required when use_land_boundaries is 'y'" >&2
+                exit 1
+              fi
+              echo "${{ inputs.num_rows }}" >> inputs.txt
+              echo "${{ inputs.geometry_type }}" >> inputs.txt
+            else
+              echo "${{ inputs.num_rows }}" >> inputs.txt
+              echo "${{ inputs.geometry_type }}" >> inputs.txt
+            fi
+            if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
+              echo "Error: num_rows and geometry_type are required for this area" >&2
               exit 1
             fi
           else
@@ -103,8 +113,11 @@ jobs:
             exit 1
           fi
 
-          # Run the script with the prepared inputs
+          # Debug: Display the input sequence
+          echo "Input sequence:"
           cat inputs.txt
+
+          # Run the script with the prepared inputs
           python3 file_generator.py < inputs.txt
 
       - name: Upload artifacts
