@@ -108,7 +108,7 @@ jobs:
           python3 file_generator.py < inputs.txt
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: datasets
           path: |
