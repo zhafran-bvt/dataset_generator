@@ -1,6 +1,44 @@
 name: Generate Dataset
 
-on: [push]
+on:
+  workflow_dispatch:
+    inputs:
+      format_choice:
+        description: 'Choose format: 1 for WKT, 2 for GeoJSON'
+        required: true
+        default: '1'
+      num_columns:
+        description: 'Enter number of columns (max 22)'
+        required: true
+        default: '22'
+      area_choice:
+        description: 'Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam'
+        required: true
+        default: '3'
+      use_districts:
+        description: 'Use actual district geometries for Jakarta? (y/n) [only for area 1]'
+        required: false
+        default: 'n'
+      district_geojson_path:
+        description: 'Enter path to GeoJSON file for Jakarta districts (e.g., geoJson/jakarta_districts.json)'
+        required: false
+        default: ''
+      use_land_boundaries:
+        description: 'Use land boundaries to avoid sea areas? (y/n) [only for areas 3, 4, 5]'
+        required: false
+        default: 'n'
+      land_geojson_path:
+        description: 'Enter path to GeoJSON file for land boundaries (e.g., geoJson/id.json)'
+        required: false
+        default: ''
+      num_rows:
+        description: 'Enter number of rows'
+        required: false
+        default: '10'
+      geometry_type:
+        description: 'Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON'
+        required: false
+        default: '1'
 
 jobs:
   build:
@@ -18,9 +56,56 @@ jobs:
         run: |
           pip install pandas geopandas shapely
 
-      - name: Run script
+      - name: Prepare inputs and run script
         run: |
-          printf "1\n22\n3\ny\ngeoJson/id.json\n10\n1\n" | python3 file_generator.py
+          # Construct input sequence based on choices
+          echo -n "${{ inputs.format_choice }}\n${{ inputs.num_columns }}\n${{ inputs.area_choice }}\n" > inputs.txt
+
+          # Handle Jakarta (area_choice = 1)
+          if [ "${{ inputs.area_choice }}" = "1" ]; then
+            if [ "${{ inputs.use_districts }}" = "y" ]; then
+              echo -n "y\n${{ inputs.district_geojson_path }}\n" >> inputs.txt
+              if [ -z "${{ inputs.district_geojson_path }}" ]; then
+                echo "Error: district_geojson_path is required when use_districts is 'y'" >&2
+                exit 1
+              fi
+            else
+              echo -n "n\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+              if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
+                echo "Error: num_rows and geometry_type are required when use_districts is 'n'" >&2
+                exit 1
+              fi
+            fi
+          # Handle Yogyakarta (area_choice = 2)
+          elif [ "${{ inputs.area_choice }}" = "2" ]; then
+            echo -n "${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+            if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
+              echo "Error: num_rows and geometry_type are required for Yogyakarta" >&2
+              exit 1
+            fi
+          # Handle Indonesia, Japan, Vietnam (area_choice = 3, 4, 5)
+          elif [ "${{ inputs.area_choice }}" = "3" ] || [ "${{ inputs.area_choice }}" = "4" ] || [ "${{ inputs.area_choice }}" = "5" ]; then
+            if [ "${{ inputs.use_land_boundaries }}" = "y" ]; then
+              echo -n "y\n${{ inputs.land_geojson_path }}\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+              if [ -z "${{ inputs.land_geojson_path }}" ]; then
+                echo "Error: land_geojson_path is required when use_land_boundaries is 'y'" >&2
+                exit 1
+              fi
+            else
+              echo -n "n\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+            fi
+            if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
+              echo "Error: num_rows and geometry_type are required for this area" >&2
+              exit 1
+            fi
+          else
+            echo "Error: Invalid area_choice" >&2
+            exit 1
+          fi
+
+          # Run the script with the prepared inputs
+          cat inputs.txt
+          python3 file_generator.py < inputs.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
