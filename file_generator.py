@@ -49,8 +49,8 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
     if geom_type == "POINT":
         if format_type == "WKT":
             return f"POINT ({lon:.6f} {lat:.6f})"
-        else:
-            return {"type": "Point", "coordinates": [lon, lat]}
+        else:  # GeoJSON
+            return json.dumps({"type": "Point", "coordinates": [lon, lat]})
     
     elif geom_type in ["POLYGON", "MULTIPOLYGON"]:
         width = random.uniform(0.001, 0.01)
@@ -68,11 +68,11 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
                 return f"POLYGON (({coord_str}))"
             else:
                 return f"MULTIPOLYGON ((({coord_str})))"
-        else:
+        else:  # GeoJSON
             if geom_type == "POLYGON":
-                return {"type": "Polygon", "coordinates": [coords]}
+                return json.dumps({"type": "Polygon", "coordinates": [coords]})
             else:
-                return {"type": "MultiPolygon", "coordinates": [[coords]]}
+                return json.dumps({"type": "MultiPolygon", "coordinates": [[coords]]})
 
 def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None):
     """
@@ -135,12 +135,12 @@ def load_country_land_geometry(geojson_path):
     try:
         with open(geojson_path, 'r') as f:
             data = json.load(f)
-        if data['type'] == 'FeatureCollection':
-            features = data['features']
+        if data["type"] == "FeatureCollection":
+            features = data["features"]
             if features:
                 geometry = shape(features[0]['geometry'])
                 return geometry
-        elif data['type'] in ['Polygon', 'MultiPolygon']:
+        elif data["type"] in ["Polygon", "MultiPolygon"]:
             geometry = shape(data)
             return geometry
         print("Unsupported GeoJSON type or no features found.")
