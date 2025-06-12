@@ -61,8 +61,23 @@ jobs:
           # Construct input sequence based on choices
           echo -n "${{ inputs.format_choice }}\n${{ inputs.num_columns }}\n${{ inputs.area_choice }}\n" > inputs.txt
 
+          # Handle Indonesia, Japan, Vietnam (area_choice = 3, 4, 5)
+          if [ "${{ inputs.area_choice }}" = "3" ] || [ "${{ inputs.area_choice }}" = "4" ] || [ "${{ inputs.area_choice }}" = "5" ]; then
+            if [ "${{ inputs.use_land_boundaries }}" = "y" ]; then
+              echo -n "y\n${{ inputs.land_geojson_path }}\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+              if [ -z "${{ inputs.land_geojson_path }}" ]; then
+                echo "Error: land_geojson_path is required when use_land_boundaries is 'y'" >&2
+                exit 1
+              fi
+            else
+              echo -n "n\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
+            fi
+            if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
+              echo "Error: num_rows and geometry_type are required for this area" >&2
+              exit 1
+            fi
           # Handle Jakarta (area_choice = 1)
-          if [ "${{ inputs.area_choice }}" = "1" ]; then
+          elif [ "${{ inputs.area_choice }}" = "1" ]; then
             if [ "${{ inputs.use_districts }}" = "y" ]; then
               echo -n "y\n${{ inputs.district_geojson_path }}\n" >> inputs.txt
               if [ -z "${{ inputs.district_geojson_path }}" ]; then
@@ -81,21 +96,6 @@ jobs:
             echo -n "${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
             if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
               echo "Error: num_rows and geometry_type are required for Yogyakarta" >&2
-              exit 1
-            fi
-          # Handle Indonesia, Japan, Vietnam (area_choice = 3, 4, 5)
-          elif [ "${{ inputs.area_choice }}" = "3" ] || [ "${{ inputs.area_choice }}" = "4" ] || [ "${{ inputs.area_choice }}" = "5" ]; then
-            if [ "${{ inputs.use_land_boundaries }}" = "y" ]; then
-              echo -n "y\n${{ inputs.land_geojson_path }}\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
-              if [ -z "${{ inputs.land_geojson_path }}" ]; then
-                echo "Error: land_geojson_path is required when use_land_boundaries is 'y'" >&2
-                exit 1
-              fi
-            else
-              echo -n "n\n${{ inputs.num_rows }}\n${{ inputs.geometry_type }}\n" >> inputs.txt
-            fi
-            if [ -z "${{ inputs.num_rows }}" ] || [ -z "${{ inputs.geometry_type }}" ]; then
-              echo "Error: num_rows and geometry_type are required for this area" >&2
               exit 1
             fi
           else
