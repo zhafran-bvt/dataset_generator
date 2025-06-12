@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -58,8 +58,8 @@ jobs:
 
       - name: Prepare inputs and run script
         run: |
-# Construct input sequence based on choices
-          echo -n "" > inputs.txt  # Initialize empty file
+          # Initialize empty input file
+          echo -n "" > inputs.txt
 
           # Always include format_choice, num_columns, and area_choice first
           echo "${{ inputs.format_choice }}" >> inputs.txt
