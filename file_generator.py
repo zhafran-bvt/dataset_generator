@@ -2,7 +2,8 @@ import random
 import pandas as pd
 import json
 import os
-from shapely.geometry import shape, Point
+from shapely.geometry import shape, Point, Polygon, MultiPolygon
+from shapely.ops import unary_union
 from tqdm import tqdm
 
 # Constants for realistic data generation
@@ -66,60 +67,37 @@ def random_point_in_geometry(geometry):
         if geometry.contains(point):
             return point
 
-def load_country_land_geometry(geojson_path):
+def load_land_geometry(geojson_path):
     """
-    Load a country's land geometry from a GeoJSON file.
+    Load land geometry from a GeoJSON file, combining all features into a single geometry.
     """
     try:
         with open(geojson_path, 'r') as f:
             data = json.load(f)
         
         if data['type'] == 'FeatureCollection':
-            features = data['features']
-            if not features:
-                print("No features found in FeatureCollection.")
+            geometries = [shape(feature['geometry']) for feature in data['features'] if 'geometry' in feature]
+            if not geometries:
+                print("No valid geometries found in FeatureCollection.")
                 return None
-            geometry = shape(features[0]['geometry'])
-            return geometry
-            
-        elif data['type'] in ['Polygon', 'MultiPolygon']:
-            geometry = shape(data)
-            return geometry
-            
-        print("Unsupported GeoJSON type or no features found.")
-        return None
-        
+            combined_geometry = unary_union(geometries)
+            return combined_geometry
+        elif data['type'] == 'Polygon':
+            return Polygon(data['coordinates'])
+        elif data['type'] == 'MultiPolygon':
+            return MultiPolygon(data['coordinates'])
+        else:
+            print("Unsupported GeoJSON type.")
+            return None
     except Exception as e:
         print(f"Error loading GeoJSON file: {e}")
         return None
 
-def load_jakarta_districts(geojson_path, format_type):
-    """
-    Load Jakarta district geometries from a GeoJSON file.
-    """
-    try:
-        with open(geojson_path, 'r') as f:
-            data = json.load(f)
-        
-        districts = []
-        if data['type'] == 'FeatureCollection':
-            for feature in data['features']:
-                geom = shape(feature['geometry'])
-                district_name = feature['properties'].get('name', 'Unknown')
-                if format_type == "WKT":
-                    geom_str = geom.wkt
-                else:
-                    geom_str = json.dumps(feature['geometry'])
-                districts.append({"district_name": district_name, "geom": geom_str})
-        return districts
-    except Exception as e:
-        print(f"Error loading Jakarta districts: {e}")
-        return []
-
 def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None):
     """
     Generate random geometry (POINT, POLYGON, or MULTIPOLYGON) within specified bounds or land geometry.
-    If land_geometry is provided, points are generated within it to avoid sea areas.
+    If land_geometry is provided, the geometry is clipped to ensure it stays within land boundaries.
+    The size of POLYGON and MULTIPOLYGON is scaled based on the area's longitudinal and latitudinal extent.
     """
     if land_geometry:
         point = random_point_in_geometry(land_geometry)
@@ -135,8 +113,12 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
             return json.dumps({"type": "Point", "coordinates": [lon, lat]})
     
     elif geom_type in ["POLYGON", "MULTIPOLYGON"]:
-        width = random.uniform(0.001, 0.01)
-        height = random.uniform(0.001, 0.01)
+        lon_extent = lon_max - lon_min
+        lat_extent = lat_max - lat_min
+        
+        width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
+        height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
+
         coords = [
             [lon, lat],
             [lon + width, lat],
@@ -144,6 +126,33 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
             [lon, lat + height],
             [lon, lat]
         ]
+
+        initial_polygon = Polygon(coords)
+
+        if land_geometry:
+            clipped_geometry = land_geometry.intersection(initial_polygon)
+            if clipped_geometry.is_empty:
+                width = lon_extent * 0.005
+                height = lat_extent * 0.005
+                coords = [
+                    [lon, lat],
+                    [lon + width, lat],
+                    [lon + width, lat + height],
+                    [lon, lat + height],
+                    [lon, lat]
+                ]
+                clipped_geometry = land_geometry.intersection(Polygon(coords))
+
+            if isinstance(clipped_geometry, Polygon):
+                coords = list(clipped_geometry.exterior.coords)
+            elif isinstance(clipped_geometry, MultiPolygon):
+                coords = list(clipped_geometry.geoms[0].exterior.coords)
+            else:
+                coords = [[lon, lat], [lon, lat], [lon, lat], [lon, lat], [lon, lat]]
+        else:
+            clipped_geometry = initial_polygon
+            coords = list(clipped_geometry.exterior.coords)
+
         if format_type == "WKT":
             coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
             if geom_type == "POLYGON":
@@ -159,8 +168,7 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
 def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None):
     """
     Generate a DataFrame with random data and geometries.
-    Passes land_geometry to generate_random_geom for land-only point generation.
-    Fixed to prevent geom column overwrite.
+    Passes land_geometry to generate random geometries within land boundaries.
     """
     if cols > len(REALISTIC_LABELS) + 2:
         cols = len(REALISTIC_LABELS) + 2
@@ -170,30 +178,6 @@ def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_m
         row = {"id": i + 1}
         row["geom"] = generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
         for label in labels[2:]:
-            row[label] = generate_realistic_value(label)
-        data.append(row)
-    return pd.DataFrame(data, columns=labels)
-
-def generate_district_dataframe(cols, format_type, geojson_path):
-    """
-    Generate a DataFrame using Jakarta district geometries from a GeoJSON file.
-    Assumes load_jakarta_districts is defined elsewhere.
-    """
-    if cols > len(REALISTIC_LABELS) + 3:
-        cols = len(REALISTIC_LABELS) + 3
-    labels = ["id", "district_name", "geom"] + random.sample(REALISTIC_LABELS, cols - 3)
-    districts = load_jakarta_districts(geojson_path, format_type)
-    if not districts:
-        print("No district data loaded. Exiting.")
-        exit()
-    data = []
-    for i, district in tqdm(enumerate(districts), total=len(districts), desc="Generating district rows"):
-        row = {
-            "id": i + 1,
-            "district_name": district["district_name"],
-            "geom": district["geom"]
-        }
-        for label in labels[3:]:
             row[label] = generate_realistic_value(label)
         data.append(row)
     return pd.DataFrame(data, columns=labels)
@@ -234,38 +218,26 @@ if __name__ == "__main__":
     area_name = area["name"]
     
     land_geometry = None
+    if area_choice in [1, 3, 4, 5]:
+        geojson_path = input(f"Enter path to GeoJSON file for {area_name} land boundaries (e.g., geojson/id-jk.min.geojson for Jakarta, geojson/id.json for Indonesia): ")
+        land_geometry = load_land_geometry(geojson_path)
+        if land_geometry is None:
+            print("Failed to load land geometry. Exiting.")
+            exit()
+    
+    rows = int(input("Enter number of rows: "))
+    print("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON")
+    geom_choice = int(input("Enter choice: "))
+    geom_type = "POINT" if geom_choice == 1 else "POLYGON" if geom_choice == 2 else "MULTIPOLYGON"
+    
     if area_choice == 1:
-        use_districts = input("Use actual district geometries for Jakarta? (y/n): ").lower()
-        if use_districts == 'y':
-            geojson_path = input("Enter path to GeoJSON file for Jakarta districts (e.g., geojson/jakarta_districts.json): ")
-            df = generate_district_dataframe(cols, format_type, geojson_path)
-            filename_prefix = f"jakarta_district_data_{format_type.lower()}"
-        else:
-            rows = int(input("Enter number of rows: "))
-            print("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON")
-            geom_choice = int(input("Enter choice: "))
-            geom_type = "POINT" if geom_choice == 1 else "POLYGON" if geom_choice == 2 else "MULTIPOLYGON"
-            df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max)
-            filename_prefix = f"jakarta_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}"
-    else:
-        if area_choice in [3, 4, 5]:
-            use_land = input("Use land boundaries to avoid sea areas? (y/n): ").lower()
-            if use_land == 'y':
-                geojson_path = input(f"Enter path to GeoJSON file for {area_name} land boundaries (e.g., geojson/{area_name.lower()}.json): ")
-                land_geometry = load_country_land_geometry(geojson_path)
-                if land_geometry is None:
-                    print("Failed to load land geometry. Exiting.")
-                    exit()
-                filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}_land"
-            else:
-                filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}"
-        else:
-            filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}"
-        
-        rows = int(input("Enter number of rows: "))
-        print("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON")
-        geom_choice = int(input("Enter choice: "))
-        geom_type = "POINT" if geom_choice == 1 else "POLYGON" if geom_choice == 2 else "MULTIPOLYGON"
         df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
+        filename_prefix = f"jakarta_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}_land"
+    elif area_choice in [3, 4, 5]:
+        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
+        filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}_land"
+    else:  # area_choice == 2
+        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max)
+        filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}"
     
     save_files(df, filename_prefix)
