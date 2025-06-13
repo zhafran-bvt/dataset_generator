@@ -25,7 +25,7 @@ Make sure the following are installed:
 - Python 3.x
 - Required packages:
   ```bash
-  pip install pandas geopandas shapely openpyxl
+  pip install pandas geopandas shapely openpyxl tqdm
   ```
 
 ---
