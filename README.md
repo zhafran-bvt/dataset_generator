@@ -53,18 +53,13 @@ You’ll be prompted to input:
    - `4` = Japan  
    - `5` = Vietnam  
 
-4. **Use Jakarta District Geometry** (for Jakarta):  
-   - `y` or `n`  
-   - If yes, input path to a GeoJSON file (e.g., `geojson/jakarta_districts.json`)
+4. **GeoJSON Path**:  
+   If using land boundaries or Jakarta districts, provide the corresponding GeoJSON file (e.g., `geojson/id.json`)
 
-5. **Use Land Boundaries** (for Indonesia/Japan/Vietnam):  
-   - `y` or `n`  
-   - If yes, input path to the GeoJSON file (e.g., `geojson/id.json`)
-
-6. **Number of Rows**:  
+5. **Number of Rows**:  
    Total data rows to generate
 
-7. **Geometry Type**:  
+6. **Geometry Type**:  
    - `1` = POINT  
    - `2` = POLYGON  
    - `3` = MULTIPOLYGON
@@ -80,12 +75,13 @@ indonesia_data_100r_20c_point_wkt.xlsx
 
 ## 📂 GeoJSON Directory
 
-Make sure the following files exist under the `geojson/` directory:
+Ensure the following files exist under the `geojson/` directory:
 
 - `id.json` – Land boundaries of Indonesia  
 - `jp.json` – Land boundaries of Japan  
 - `vn.json` – Land boundaries of Vietnam  
-- `jakarta_districts.json` – Detailed district geometries for Jakarta
+- `jakarta_districts.json` – District geometries for Jakarta  
+- Optionally compressed versions like `id-jk.min.geojson`
 
 ---
 
@@ -112,19 +108,37 @@ Values are intelligently randomized:
 
 ---
 
-## 🤖 GitHub Actions Workflow (Optional)
+## 🤖 GitHub Actions Workflow
 
-Automate dataset creation via GitHub Actions:
+Automate dataset creation via GitHub Actions.
 
-**Workflow File:** `.github/workflows/generate_dataset.yml`
+**Workflow File:** `.github/workflows/generate_dataset.yaml`
 
 ### How to Trigger:
 
-1. Go to **Actions** tab on GitHub
-2. Choose **Generate Dataset**
+1. Go to the **Actions** tab
+2. Select **Generate Dataset**
 3. Click **Run workflow**
-4. Fill out form inputs (format, region, columns, etc.)
-5. Submit and download results from **Artifacts**
+4. Fill out inputs:
+
+```yaml
+format_choice: 1                  # 1=WKT, 2=GeoJSON
+num_columns: 22                  # up to 22 columns
+area_choice: 3                   # 1=Jakarta, 2=Yogyakarta, 3=Indonesia, etc.
+geojson_path: geojson/id.json    # required for area 1, 3, 4, 5
+num_rows: 10                     # number of rows
+geometry_type: 1                 # 1=POINT, 2=POLYGON, 3=MULTIPOLYGON
+```
+
+### Workflow Logic:
+
+```yaml
+- Setup Python and dependencies
+- Prepare input file from dispatch inputs
+- Validate required fields based on area
+- Pipe the inputs into `file_generator.py`
+- Upload generated `.csv` and `.xlsx` as artifacts
+```
 
 ---
 
@@ -136,12 +150,6 @@ Automate dataset creation via GitHub Actions:
 
 ---
 
-## 📄 License
-
-This project is released under the MIT License.
-
----
-
 ## 📬 Contributing
 
-Feel free to fork, submit PRs, or raise issues to improve or extend functionality.
+Fork, create a branch, and submit PRs or open issues to improve the tool.
