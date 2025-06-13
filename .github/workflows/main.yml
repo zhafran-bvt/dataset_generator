@@ -20,7 +20,7 @@ on:
         required: false
         default: 'n'
       district_geojson_path:
-        description: 'Enter path to GeoJSON file for Jakarta districts (e.g., geoJson/jakarta_districts.json)'
+        description: 'Enter path to GeoJSON file for Jakarta districts (e.g., geojson/jakarta_districts.json)'
         required: false
         default: ''
       use_land_boundaries:
@@ -28,7 +28,7 @@ on:
         required: false
         default: 'n'
       land_geojson_path:
-        description: 'Enter path to GeoJSON file for land boundaries (e.g., geoJson/id.json)'
+        description: 'Enter path to GeoJSON file for land boundaries (e.g., geojson/id.json)'
         required: false
         default: ''
       num_rows:
@@ -54,7 +54,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas geopandas shapely openpyxl
+          pip install pandas geopandas shapely openpyxl tqdm
 
       - name: Prepare inputs and run script
         run: |
