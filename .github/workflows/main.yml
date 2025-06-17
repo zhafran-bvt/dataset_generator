@@ -8,9 +8,9 @@ on:
         required: true
         default: '1'
       num_columns:
-        description: 'Enter number of columns (max 22)'
+        description: 'Enter number of columns (max 23)'
         required: true
-        default: '22'
+        default: '23'
       area_choice:
         description: 'Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam'
         required: true
