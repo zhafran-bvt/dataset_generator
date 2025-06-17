@@ -5,6 +5,7 @@ import os
 from shapely.geometry import shape, Point, Polygon, MultiPolygon
 from shapely.ops import unary_union
 from tqdm import tqdm
+from shapely.strtree import STRtree  # Added for spatial indexing
 
 # Constants for realistic data generation
 REALISTIC_LABELS = [
@@ -167,19 +168,45 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
 
 def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None):
     """
-    Generate a DataFrame with random data and geometries.
-    Passes land_geometry to generate random geometries within land boundaries.
+    Generate a DataFrame with random data and non-intersecting geometries.
+    Stops when the desired number of rows is reached or no more non-intersecting geometries can be placed.
     """
     if cols > len(REALISTIC_LABELS) + 2:
         cols = len(REALISTIC_LABELS) + 2
     labels = ["id", "geom"] + random.sample(REALISTIC_LABELS, cols - 2)
     data = []
-    for i in tqdm(range(rows), desc="Generating rows"):
-        row = {"id": i + 1}
-        row["geom"] = generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
-        for label in labels[2:]:
-            row[label] = generate_realistic_value(label)
-        data.append(row)
+    existing_geometries = []
+    tree = STRtree(existing_geometries)  # Initialize with empty list
+
+    with tqdm(total=rows, desc="Generating rows") as pbar:
+        attempts = 0
+        max_attempts = 1000  # Maximum attempts to place a geometry
+        while len(data) < rows and attempts < max_attempts:
+            geom = generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
+            if format_type == "WKT":
+                current_geometry = shape(geom)
+            else:
+                current_geometry = shape(json.loads(geom))
+
+            # Check for intersection with existing geometries
+            if existing_geometries and tree.query(current_geometry).size > 0:
+                attempts += 1
+                continue
+
+            # Add geometry if no intersection
+            existing_geometries.append(current_geometry)
+            tree = STRtree(existing_geometries)  # Update the spatial index
+            row = {"id": len(data) + 1}
+            row["geom"] = geom
+            for label in labels[2:]:
+                row[label] = generate_realistic_value(label)
+            data.append(row)
+            pbar.update(1)
+            attempts = 0  # Reset attempts on success
+
+        if len(data) < rows:
+            print(f"Warning: Only {len(data)} geometries could be placed without intersection. Maximum attempts reached.")
+
     return pd.DataFrame(data, columns=labels)
 
 def save_files(df, filename_prefix):
