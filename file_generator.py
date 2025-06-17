@@ -4,8 +4,10 @@ import json
 import os
 from shapely.geometry import shape, Point, Polygon, MultiPolygon
 from shapely.ops import unary_union
+from shapely.wkt import loads
 from tqdm import tqdm
-from shapely.strtree import STRtree  # Added for spatial indexing
+from shapely.strtree import STRtree
+from datetime import datetime, timedelta
 
 # Constants for realistic data generation
 REALISTIC_LABELS = [
@@ -50,6 +52,17 @@ BOUNDING_BOXES = {
     4: {"name": "Japan", "lon_min": 129.0, "lon_max": 146.0, "lat_min": 30.0, "lat_max": 45.0},
     5: {"name": "Vietnam", "lon_min": 102.0, "lon_max": 110.0, "lat_min": 8.0, "lat_max": 23.0}
 }
+
+def generate_random_datetime():
+    """
+    Generate a random datetime in 2025 in ISO 8601 format (e.g., 2025-06-17T13:00:00Z).
+    """
+    start = datetime(2025, 1, 1, 0, 0, 0)
+    end = datetime(2025, 12, 31, 23, 59, 59)
+    delta = end - start
+    random_seconds = random.randint(0, int(delta.total_seconds()))
+    random_dt = start + timedelta(seconds=random_seconds)
+    return random_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def generate_realistic_value(label):
     """
@@ -170,41 +183,39 @@ def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_m
     """
     Generate a DataFrame with random data and non-intersecting geometries.
     Stops when the desired number of rows is reached or no more non-intersecting geometries can be placed.
+    Includes a fixed 'date_created' column with random ISO 8601 datetimes.
     """
-    from shapely.wkt import loads  # Import WKT parser
-    if cols > len(REALISTIC_LABELS) + 2:
-        cols = len(REALISTIC_LABELS) + 2
-    labels = ["id", "geom"] + random.sample(REALISTIC_LABELS, cols - 2)
+    if cols > len(REALISTIC_LABELS) + 3:  # Account for id, geom, and date_created
+        cols = len(REALISTIC_LABELS) + 3
+    labels = ["id", "geom", "date_created"] + random.sample(REALISTIC_LABELS, cols - 3)
     data = []
     existing_geometries = []
-    tree = STRtree(existing_geometries)  # Initialize with empty list
+    tree = STRtree(existing_geometries)
 
     with tqdm(total=rows, desc="Generating rows") as pbar:
         attempts = 0
-        max_attempts = 1000  # Maximum attempts to place a geometry
+        max_attempts = 1000
         while len(data) < rows and attempts < max_attempts:
             geom = generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
-            # Convert geom to shapely geometry based on format_type
             if format_type == "WKT":
-                current_geometry = loads(geom)  # Parse WKT string
+                current_geometry = loads(geom)
             else:
-                current_geometry = shape(json.loads(geom))  # Parse GeoJSON
+                current_geometry = shape(json.loads(geom))
 
-            # Check for intersection with existing geometries
             if existing_geometries and tree.query(current_geometry).size > 0:
                 attempts += 1
                 continue
 
-            # Add geometry if no intersection
             existing_geometries.append(current_geometry)
-            tree = STRtree(existing_geometries)  # Update the spatial index
+            tree = STRtree(existing_geometries)
             row = {"id": len(data) + 1}
             row["geom"] = geom
-            for label in labels[2:]:
+            row["date_created"] = generate_random_datetime()
+            for label in labels[3:]:
                 row[label] = generate_realistic_value(label)
             data.append(row)
             pbar.update(1)
-            attempts = 0  # Reset attempts on success
+            attempts = 0
 
         if len(data) < rows:
             print(f"Warning: Only {len(data)} geometries could be placed without intersection. Maximum attempts reached.")
@@ -232,7 +243,7 @@ if __name__ == "__main__":
     format_choice = int(input("Enter choice: "))
     format_type = "WKT" if format_choice == 1 else "GeoJSON"
     
-    cols = int(input(f"Enter number of columns (max {len(REALISTIC_LABELS) + 2}): "))
+    cols = int(input(f"Enter number of columns (max {len(REALISTIC_LABELS) + 3}): "))
     
     print("Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam")
     area_choice = int(input("Enter choice: "))
