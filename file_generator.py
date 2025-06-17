@@ -171,6 +171,7 @@ def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_m
     Generate a DataFrame with random data and non-intersecting geometries.
     Stops when the desired number of rows is reached or no more non-intersecting geometries can be placed.
     """
+    from shapely.wkt import loads  # Import WKT parser
     if cols > len(REALISTIC_LABELS) + 2:
         cols = len(REALISTIC_LABELS) + 2
     labels = ["id", "geom"] + random.sample(REALISTIC_LABELS, cols - 2)
@@ -183,10 +184,11 @@ def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_m
         max_attempts = 1000  # Maximum attempts to place a geometry
         while len(data) < rows and attempts < max_attempts:
             geom = generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
+            # Convert geom to shapely geometry based on format_type
             if format_type == "WKT":
-                current_geometry = shape(geom)
+                current_geometry = loads(geom)  # Parse WKT string
             else:
-                current_geometry = shape(json.loads(geom))
+                current_geometry = shape(json.loads(geom))  # Parse GeoJSON
 
             # Check for intersection with existing geometries
             if existing_geometries and tree.query(current_geometry).size > 0:
