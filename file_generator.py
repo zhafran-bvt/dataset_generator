@@ -9,6 +9,13 @@ from tqdm import tqdm
 from shapely.strtree import STRtree
 from datetime import datetime, timedelta
 
+# Define options for new categorical and economic columns
+GENDER_OPTIONS = ['Male', 'Female', 'Other']
+OCCUPATION_OPTIONS = ['Employed', 'Unemployed', 'Student', 'Retired', 'Homemaker', 'Other']
+EDUCATION_OPTIONS = ['Less than High School', 'High School', 'Some College', 'Associate Degree', "Bachelor's Degree", "Master's Degree", 'Doctorate']
+EMPLOYMENT_STATUS_OPTIONS = ['Full-time', 'Part-time', 'Self-employed', 'Unemployed', 'Retired', 'Student', 'Other']
+HEALTHCARE_ACCESS_OPTIONS = [True, False]
+
 # Constants for realistic data generation
 REALISTIC_LABELS = [
     "Population", "Birth Rate", "Death Rate", "Unemployment Rate",
@@ -41,7 +48,8 @@ VALUE_RANGES = {
     "Internet Penetration": (0, 100),
     "Energy Consumption": (100, 10000),
     "Water Access": (50, 100),
-    "Sanitation Access": (50, 100)
+    "Sanitation Access": (50, 100),
+    "Household Income": (0, 1000000)  # Added for economic indicator
 }
 
 # Define bounding boxes for each area
@@ -66,8 +74,18 @@ def generate_random_datetime():
 
 def generate_realistic_value(label):
     """
-    Generate a realistic value for a given label based on predefined ranges.
+    Generate a realistic value for a given label based on predefined ranges or categorical options.
     """
+    if label == "Gender":
+        return random.choice(GENDER_OPTIONS)
+    elif label == "Occupation":
+        return random.choice(OCCUPATION_OPTIONS)
+    elif label == "Education Level":
+        return random.choice(EDUCATION_OPTIONS)
+    elif label == "Employment Status":
+        return random.choice(EMPLOYMENT_STATUS_OPTIONS)
+    elif label == "Access to Healthcare":
+        return random.choice(HEALTHCARE_ACCESS_OPTIONS)
     min_val, max_val = VALUE_RANGES.get(label, (0, 100))
     return round(random.uniform(min_val, max_val), 2)
 
@@ -179,15 +197,29 @@ def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_
             else:
                 return json.dumps({"type": "MultiPolygon", "coordinates": [[coords]]})
 
-def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None):
+def generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None, include_demographic=False, include_economic=False):
     """
     Generate a DataFrame with random data and non-intersecting geometries.
+    Includes optional demographic and economic columns based on user input.
     Stops when the desired number of rows is reached or no more non-intersecting geometries can be placed.
-    Includes a fixed 'date_created' column with random ISO 8601 datetimes.
     """
-    if cols > len(REALISTIC_LABELS) + 3:  # Account for id, geom, and date_created
-        cols = len(REALISTIC_LABELS) + 3
-    labels = ["id", "geom", "date_created"] + random.sample(REALISTIC_LABELS, cols - 3)
+    # Calculate fixed columns
+    fixed_columns = ["id", "geom", "date_created"]
+    if include_demographic:
+        fixed_columns += ["Gender", "Occupation", "Education Level"]
+    if include_economic:
+        fixed_columns += ["Household Income", "Employment Status", "Access to Healthcare"]
+    
+    # Adjust max columns based on fixed columns
+    max_cols = len(REALISTIC_LABELS) + len(fixed_columns)
+    if cols > max_cols:
+        cols = max_cols
+    
+    # Select random columns from REALISTIC_LABELS
+    num_additional = cols - len(fixed_columns)
+    additional_labels = random.sample(REALISTIC_LABELS, min(num_additional, len(REALISTIC_LABELS))) if num_additional > 0 else []
+    labels = fixed_columns + additional_labels
+
     data = []
     existing_geometries = []
     tree = STRtree(existing_geometries)
@@ -229,7 +261,7 @@ def save_files(df, filename_prefix):
     csv_file = f"{filename_prefix}.csv"
     excel_file = f"{filename_prefix}.xlsx"
     
-    df.to_csv(csv_file, index=False)
+    df.to_csv(csv_file, index=False, encoding='utf-8')
     print(f"Saved: {csv_file} ({os.path.getsize(csv_file) / 1024 / 1024:.2f} MB)")
     
     try:
@@ -243,7 +275,21 @@ if __name__ == "__main__":
     format_choice = int(input("Enter choice: "))
     format_type = "WKT" if format_choice == 1 else "GeoJSON"
     
-    cols = int(input(f"Enter number of columns (max {len(REALISTIC_LABELS) + 3}): "))
+    # Prompt for demographic and economic columns
+    include_demographic = input("Include demographic columns (Gender, Occupation, Education Level)? (yes/no): ").lower() == 'yes'
+    include_economic = input("Include economic columns (Household Income, Employment Status, Access to Healthcare)? (yes/no): ").lower() == 'yes'
+    
+    # Calculate minimum columns
+    min_cols = 3  # id, geom, date_created
+    if include_demographic:
+        min_cols += 3
+    if include_economic:
+        min_cols += 3
+    
+    cols = int(input(f"Enter number of columns (min {min_cols}, max {len(REALISTIC_LABELS) + min_cols}): "))
+    while cols < min_cols:
+        print(f"Number of columns must be at least {min_cols}.")
+        cols = int(input(f"Enter number of columns (min {min_cols}, max {len(REALISTIC_LABELS) + min_cols}): "))
     
     print("Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam")
     area_choice = int(input("Enter choice: "))
@@ -271,13 +317,13 @@ if __name__ == "__main__":
     geom_type = "POINT" if geom_choice == 1 else "POLYGON" if geom_choice == 2 else "MULTIPOLYGON"
     
     if area_choice == 1:
-        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
+        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry, include_demographic, include_economic)
         filename_prefix = f"jakarta_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}_land"
     elif area_choice in [3, 4, 5]:
-        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry)
+        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry, include_demographic, include_economic)
         filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}_land"
     else:  # area_choice == 2
-        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max)
+        df = generate_random_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, include_demographic=include_demographic, include_economic=include_economic)
         filename_prefix = f"{area_name.lower()}_data_{rows}r_{cols}c_{geom_type.lower()}_{format_type.lower()}"
     
     save_files(df, filename_prefix)
