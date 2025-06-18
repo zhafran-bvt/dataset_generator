@@ -7,10 +7,18 @@ on:
         description: 'Choose format: 1 for WKT, 2 for GeoJSON'
         required: true
         default: '1'
-      num_columns:
-        description: 'Enter number of columns (max 22)'
+      include_demographic:
+        description: 'Include demographic columns (Gender, Occupation, Education Level)? (yes/no)'
         required: true
-        default: '22'
+        default: 'no'
+      include_economic:
+        description: 'Include economic columns (Household Income, Employment Status, Access to Healthcare)? (yes/no)'
+        required: true
+        default: 'no'
+      num_columns:
+        description: 'Enter number of columns (min 3, max 29 depending on demographic/economic choices)'
+        required: true
+        default: '9'
       area_choice:
         description: 'Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam'
         required: true
@@ -21,11 +29,11 @@ on:
         default: ''
       num_rows:
         description: 'Enter number of rows'
-        required: false
+        required: true
         default: '10'
       geometry_type:
         description: 'Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON'
-        required: false
+        required: true
         default: '1'
 
 jobs:
@@ -49,9 +57,30 @@ jobs:
           # Initialize empty input file
           echo -n "" > inputs.txt
 
-          # Always include format_choice, num_columns, and area_choice
+          # Always include format_choice
           echo "${{ inputs.format_choice }}" >> inputs.txt
+
+          # Include demographic and economic choices
+          echo "${{ inputs.include_demographic }}" >> inputs.txt
+          echo "${{ inputs.include_economic }}" >> inputs.txt
+
+          # Calculate minimum columns
+          min_cols=3
+          if [ "${{ inputs.include_demographic }}" = "yes" ]; then
+            min_cols=$((min_cols + 3))
+          fi
+          if [ "${{ inputs.include_economic }}" = "yes" ]; then
+            min_cols=$((min_cols + 3))
+          fi
+
+          # Validate num_columns
+          if [ "${{ inputs.num_columns }}" -lt "$min_cols" ]; then
+            echo "Error: num_columns must be at least $min_cols" >&2
+            exit 1
+          fi
           echo "${{ inputs.num_columns }}" >> inputs.txt
+
+          # Always include area_choice
           echo "${{ inputs.area_choice }}" >> inputs.txt
 
           # Handle GeoJSON path for areas 1, 3, 4, 5
