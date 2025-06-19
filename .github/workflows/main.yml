@@ -35,6 +35,10 @@ on:
         description: 'Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON'
         required: true
         default: '1'
+      use_spatial_clustering:
+        description: 'Use spatial clustering to create realistic population distributions? (yes/no)'
+        required: true
+        default: 'no'
 
 jobs:
   build:
@@ -50,7 +54,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas geopandas shapely openpyxl tqdm
+          pip install pandas geopandas shapely openpyxl tqdm numpy
+
+      - name: Run unit tests
+        run: |
+          python -m unittest test_file_generator.py -v
 
       - name: Prepare inputs and run script
         run: |
@@ -100,6 +108,9 @@ jobs:
             exit 1
           fi
 
+          # Include use_spatial_clustering
+          echo "${{ inputs.use_spatial_clustering }}" >> inputs.txt
+
           # Debug: Display the input sequence
           echo "Input sequence:"
           cat inputs.txt
@@ -112,5 +123,5 @@ jobs:
         with:
           name: datasets
           path: |
-            *.csv
-            *.xlsx
+            output/*.csv
+            output/*.xlsx
