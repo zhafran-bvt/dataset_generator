@@ -1,155 +1,210 @@
-# Dataset Generator
+# 🗂️ Dataset Generator
 
-This repository provides a Python script (`file_generator.py`) to generate synthetic geospatial and demographic datasets for regions including Jakarta, Yogyakarta, Indonesia, Japan, and Vietnam. It supports geometry types in Well-Known Text (WKT) or GeoJSON formats and produces realistic, randomized data columns suitable for simulation, visualization, or testing geospatial applications.
+This repository provides a Python script (`file_generator.py`) to generate **synthetic geospatial and demographic datasets** for regions including Jakarta, Yogyakarta, Indonesia, Japan, and Vietnam.
+
+It supports geometry types in **Well-Known Text (WKT)** or **GeoJSON** formats and produces **realistic, randomized, and correlated** data suitable for simulation, visualization, or testing geospatial applications. A test suite (`test_file_generator.py`) is included to ensure reliability.
 
 ---
 
 ## 📌 Features
 
-- Generates data with realistic labels like:
-  - *Population*, *Migration*, *Mortality*, *Income per Capita*, etc.
-- Geometry types supported:
-  - `POINT`, `POLYGON`, and `MULTIPOLYGON`
-- Optional use of actual **Jakarta district boundaries** via GeoJSON
-- Optional filtering using **land boundary GeoJSONs** to avoid placing points in oceans (for Indonesia, Japan, Vietnam)
-- Output formats:
-  - **CSV**
-  - **Excel (XLSX)**
+- Realistic, correlated labels such as:
+  - Population, Birth Rate, Income per Capita, Health Index, Literacy Rate, etc.
+- **Optional Demographic Columns**: Gender, Occupation, Education Level  
+- **Optional Economic Columns**: Household Income, Employment Status, Access to Healthcare
+- Supports geometry types:
+  - `POINT`, `POLYGON`, `MULTIPOLYGON`
+- Optional spatial clustering for realistic distributions
+- Optional use of real **GeoJSON boundaries** to avoid placing geometries in oceans
+- **Output formats**:
+  - CSV
+  - Excel (XLSX) – limited to 1 million rows
+- Chunked output support for large datasets
+- Unit tests for validating dataset logic
 
 ---
 
 ## ⚙️ Requirements
 
-Make sure the following are installed:
+Ensure the following are installed:
 
-- Python 3.x
-- Required packages:
-  ```bash
-  pip install pandas geopandas shapely openpyxl tqdm
-  ```
+```bash
+pip install pandas geopandas shapely openpyxl tqdm numpy scipy
+```
+
+Supports **Python 3.x**
 
 ---
 
 ## 🚀 Usage
 
-Run the script using:
+Run the generator:
 
 ```bash
 python file_generator.py
 ```
 
-You’ll be prompted to input:
+### You will be prompted to input:
 
-1. **Format**:  
-   `1` = WKT, `2` = GeoJSON
+- **Format**:  
+  `1 = WKT`, `2 = GeoJSON`
 
-2. **Number of Columns**:  
-   Up to 20 (limited by available labels)
+- **Include Demographic Columns**:  
+  `yes` / `no`
 
-3. **Area**:  
-   - `1` = Jakarta  
-   - `2` = Yogyakarta  
-   - `3` = Indonesia  
-   - `4` = Japan  
-   - `5` = Vietnam  
+- **Include Economic Columns**:  
+  `yes` / `no`
 
-4. **GeoJSON Path**:  
-   If using land boundaries or Jakarta districts, provide the corresponding GeoJSON file (e.g., `geojson/id.json`)
+- **Number of Columns**:  
+  Minimum `3` (or `6/9` with demographic/economic), up to `29`
 
-5. **Number of Rows**:  
-   Total data rows to generate
+- **Use Spatial Clustering**:  
+  `yes` / `no`
 
-6. **Geometry Type**:  
-   - `1` = POINT  
-   - `2` = POLYGON  
-   - `3` = MULTIPOLYGON
+- **Area**:  
+  ```
+  1 = Jakarta  
+  2 = Yogyakarta  
+  3 = Indonesia  
+  4 = Japan  
+  5 = Vietnam
+  ```
 
-After execution, output files will be saved in the current directory with filenames like:
+- **GeoJSON Path** *(for areas 1, 3, 4, 5)*:  
+  e.g., `geojson/id.json`
 
-```
-indonesia_data_100r_20c_point_wkt.csv  
-indonesia_data_100r_20c_point_wkt.xlsx
+- **Number of Rows**:  
+  Total number of data rows
+
+- **Use Chunked Output** *(for >100,000 rows)*:  
+  `yes` / `no`
+
+- **Geometry Type**:  
+  ```
+  1 = POINT  
+  2 = POLYGON  
+  3 = MULTIPOLYGON
+  ```
+
+### Example Outputs:
+
+```text
+output/indonesia_data_100r_20c_point_wkt.csv  
+output/indonesia_data_100r_20c_point_wkt.xlsx  
+output/indonesia_data_1000000r_20c_point_wkt_part1.csv
+output/indonesia_data_1000000r_20c_point_wkt_part2.csv
 ```
 
 ---
 
 ## 📂 GeoJSON Directory
 
-Ensure the following files exist under the `geojson/` directory:
+Make sure the following files are in `geojson/`:
 
-- `id.json` – Land boundaries of Indonesia  
-- `jp.json` – Land boundaries of Japan  
-- `vn.json` – Land boundaries of Vietnam  
-- `jakarta_districts.json` – District geometries for Jakarta  
-- Optionally compressed versions like `id-jk.min.geojson`
+- `id.json` – Indonesia
+- `jp.json` – Japan
+- `vn.json` – Vietnam
+- `jakarta_districts.json` – Jakarta districts
+- Optional: Minified versions like `id-jk.min.geojson`
 
 ---
 
 ## 🧪 Dataset Columns
 
-Each dataset includes:
+### Always included:
+- `id`: Unique identifier  
+- `geom`: Geometry (WKT or GeoJSON)  
+- `date_created`: Random datetime in 2025 (ISO 8601)
 
-- `id`: Unique identifier
-- `geom`: Geometry (WKT or GeoJSON)
-- Additional demographic columns (max 20) selected from:
+### Optional Demographic:
+- `Gender`: Male, Female, Other  
+- `Occupation`: Employed, Unemployed, Student, etc.  
+- `Education Level`: High School, Bachelor’s, etc.
 
-```text
-Family Identity Card, Migration, Mortality, People Density,
-Population, Registered Residents, Birth Rate, Death Rate,
-Unemployment Rate, Income per Capita, Households, Literacy Rate,
-School Enrollment, Employment Rate, Water Access, Electricity Access,
-Health Facilities, Internet Access, Average Age, Vehicle Ownership
+### Optional Economic:
+- `Household Income`: 0–1,000,000  
+- `Employment Status`: Full-time, Self-employed, etc.  
+- `Access to Healthcare`: True / False
+
+### Additional Columns (up to 20):
+- `Population`, `Birth Rate`, `Death Rate`, `Unemployment Rate`, `Income per Capita`  
+- `GDP Growth`, `Health Index`, `Urbanization Rate`, `Poverty Rate`, `Energy Consumption`, etc.
+
+> Data values are intelligently randomized with realistic ranges and correlations.
+
+---
+
+## 🧪 Testing
+
+Run the built-in unit tests:
+
+```bash
+python -m unittest test_file_generator.py -v
 ```
 
-Values are intelligently randomized:
-- Rates/percentages (0–100) for columns like `Literacy Rate`
-- Integer counts for `Population`, `Mortality`, etc.
-- Random floats where appropriate
+Tests cover:
+- Date generation
+- Geometry creation (all types)
+- Clustering logic
+- Correlation handling
+- File writing and chunking
 
 ---
 
 ## 🤖 GitHub Actions Workflow
 
-Automate dataset creation via GitHub Actions.
+This repo includes a GitHub Actions workflow to automate dataset generation.
 
-**Workflow File:** `.github/workflows/generate_dataset.yaml`
+**Workflow File**: `.github/workflows/generate_dataset.yaml`
 
-### How to Trigger:
+### Trigger Steps:
 
 1. Go to the **Actions** tab
 2. Select **Generate Dataset**
 3. Click **Run workflow**
-4. Fill out inputs:
+4. Fill in the inputs:
 
 ```yaml
 format_choice: 1                  # 1=WKT, 2=GeoJSON
-num_columns: 22                  # up to 22 columns
-area_choice: 3                   # 1=Jakarta, 2=Yogyakarta, 3=Indonesia, etc.
-geojson_path: geojson/id.json    # required for area 1, 3, 4, 5
-num_rows: 10                     # number of rows
-geometry_type: 1                 # 1=POINT, 2=POLYGON, 3=MULTIPOLYGON
+include_demographic: no           # yes/no
+include_economic: no              # yes/no
+num_columns: 9                    # 3–29
+use_spatial_clustering: no        # yes/no
+area_choice: 3                    # 1=Jakarta, ..., 5=Vietnam
+geojson_path: geojson/id.json     # required if area ≠ 2
+num_rows: 10                      # total rows
+use_chunking: yes                 # yes/no
+geometry_type: 1                  # 1=POINT, 2=POLYGON, 3=MULTIPOLYGON
 ```
 
-### Workflow Logic:
+### What It Does:
 
-```yaml
-- Setup Python and dependencies
-- Prepare input file from dispatch inputs
-- Validate required fields based on area
-- Pipe the inputs into `file_generator.py`
-- Upload generated `.csv` and `.xlsx` as artifacts
-```
+- Checks out the repo
+- Installs Python dependencies
+- Runs unit tests
+- Parses workflow inputs
+- Executes `file_generator.py`
+- Uploads generated `.csv` and `.xlsx` files as artifacts
 
 ---
 
 ## ✅ Output Example
 
-| id | geom | Population | Birth Rate | Internet Access | ... |
-|----|------|------------|------------|------------------|-----|
-| 1  | POINT(...) | 54321 | 2.5 | 75.0 | ... |
+| id | geom | date_created | Population | Income per Capita | Literacy Rate | Gender | Household Income |
+|----|------|---------------|------------|--------------------|----------------|--------|-------------------|
+| 1  | POINT(106.82 -6.17) | 2025-06-17T13:00:00Z | 54321 | 25000.50 | 85.0 | Male | 450000.75 |
 
 ---
 
 ## 📬 Contributing
 
-Fork, create a branch, and submit PRs or open issues to improve the tool.
+Contributions are welcome!
+
+- Fork the repo
+- Create a new branch
+- Submit a PR
+- Ensure your changes pass all tests (`test_file_generator.py`)
+
+Feel free to open issues to request features or report bugs.
+
+---

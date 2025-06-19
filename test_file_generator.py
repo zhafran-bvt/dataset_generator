@@ -10,12 +10,11 @@ import tempfile
 import json
 from datetime import datetime
 
-# Import your generator module
+# Import the generator module
 import file_generator as fg
 
 class TestFileGenerator(unittest.TestCase):
     def setUp(self):
-        # Simple square polygon for geo tests
         self.test_polygon = Polygon([
             (100.0, 0.0), (101.0, 0.0), (101.0, 1.0), (100.0, 1.0), (100.0, 0.0)
         ])
@@ -32,6 +31,20 @@ class TestFileGenerator(unittest.TestCase):
                         "coordinates": [[[100.0, 0.0], [101.0, 0.0], [101.0, 1.0], [100.0, 1.0], [100.0, 0.0]]]
                     }
                 }]
+            }, f)
+        self.config_path = os.path.join(self.temp_dir.name, "test_config.json")
+        with open(self.config_path, 'w') as f:
+            json.dump({
+                "format_choice": 1,
+                "include_demographic": "yes",
+                "include_economic": "no",
+                "num_columns": 9,
+                "use_spatial_clustering": "no",
+                "area_choice": 2,
+                "geojson_path": "",
+                "num_rows": 10,
+                "use_chunking": "no",
+                "geometry_type": 1
             }, f)
 
     def tearDown(self):
@@ -57,8 +70,11 @@ class TestFileGenerator(unittest.TestCase):
             self.assertTrue(self.test_polygon.contains(pt))
             self.assertIsInstance(pt, Point)
 
-    def test_load_land_geometry(self):
-        geometry = fg.load_land_geometry(self.geojson_path)
+    @patch('geopandas.read_file')
+    def test_load_land_geometry_mocked(self, mock_read_file):
+        mock_gdf = gpd.GeoDataFrame({'geometry': [self.test_polygon]})
+        mock_read_file.return_value = mock_gdf
+        geometry = fg.load_land_geometry('geoJson/jkt.geojson')
         self.assertIsNotNone(geometry)
         self.assertTrue(geometry.is_valid)
         self.assertFalse(geometry.is_empty)
@@ -87,7 +103,6 @@ class TestFileGenerator(unittest.TestCase):
         self.assertTrue(self.test_polygon.contains(pt))
 
     def test_generate_random_geom_with_spatial_clusters(self):
-        # Make a fake KDE with resample method
         class DummyKDE:
             def resample(self, n):
                 return np.array([[100.5, 0.5]] * n).T
@@ -103,24 +118,25 @@ class TestFileGenerator(unittest.TestCase):
         self.assertAlmostEqual(lat, 0.5)
 
     def test_create_spatial_clustering_model(self):
-        model = fg.create_spatial_clustering_model(100.0, 101.0, 0.0, 1.0, self.test_polygon)
+        model = fg.create_spatial_clustering_model(100.0, 101.0, 0.0, 1.0, self.test_polygon, cluster_count=3, points_per_cluster=100)
         self.assertIn('model', model)
         self.assertIn('centers', model)
-        # ensure the model can generate samples
         samples = model['model'].resample(10).T
         self.assertEqual(samples.shape[1], 2)
 
     def test_generate_correlated_values(self):
         labels = ["Income per Capita", "Education Level", "Poverty Rate"]
-        values = fg.generate_correlated_values(labels, seed=42)
+        correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
+        values = correlation_engine.generate_values(labels, seed=42)
         self.assertIn("Income per Capita", values)
         self.assertIn("Poverty Rate", values)
         self.assertIn("Education Level", values)
 
     def test_correlation_directions(self):
+        correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
         income_high, poverty_low = 0, 0
         for i in range(20):
-            vals = fg.generate_correlated_values(["Income per Capita", "Poverty Rate", "Education Level"], seed=i)
+            vals = correlation_engine.generate_values(["Income per Capita", "Poverty Rate", "Education Level"], seed=i)
             income_median = (fg.VALUE_RANGES["Income per Capita"][0] + fg.VALUE_RANGES["Income per Capita"][1]) / 2
             if vals["Income per Capita"] > income_median:
                 income_high += 1
@@ -131,13 +147,11 @@ class TestFileGenerator(unittest.TestCase):
 
     @patch('file_generator.generate_random_geom')
     def test_generate_batch_rows(self, mock_generate_random_geom):
-        # Return a different geometry string each call to ensure uniqueness
-        mock_generate_random_geom.side_effect = [
-            f"POINT ({100.5 + i * 0.01} 0.5)" for i in range(5)
-        ]
+        mock_generate_random_geom.side_effect = [f"POINT ({100.5 + i * 0.01} 0.5)" for i in range(5)]
+        correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
         batch_params = (
             0, 5, "POINT", "WKT", 100.0, 101.0, 0.0, 1.0, self.test_polygon,
-            ["id", "geom", "date_created", "Population"], False, False, None
+            ["id", "geom", "date_created", "Population"], False, False, None, correlation_engine
         )
         rows = fg.generate_batch_rows(batch_params)
         self.assertEqual(len(rows), 5)
@@ -146,23 +160,71 @@ class TestFileGenerator(unittest.TestCase):
             self.assertIn("date_created", row)
             self.assertIn("Population", row)
 
+    def test_generate_batch_rows_demographic(self):
+        correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
+        batch_params = (
+            0, 5, "POINT", "WKT", 100.0, 101.0, 0.0, 1.0, None,
+            ["id", "geom", "date_created", "Gender", "Occupation", "Education Level"], True, False, None, correlation_engine
+        )
+        rows = fg.generate_batch_rows(batch_params)
+        self.assertEqual(len(rows), 5)
+        for row in rows:
+            self.assertIn(row["Gender"], fg.GENDER_OPTIONS)
+            self.assertIn(row["Occupation"], fg.OCCUPATION_OPTIONS)
+            self.assertIn(row["Education Level"], fg.EDUCATION_OPTIONS)
+
+    def test_generate_batch_rows_economic(self):
+        correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
+        batch_params = (
+            0, 5, "POINT", "WKT", 100.0, 101.0, 0.0, 1.0, None,
+            ["id", "geom", "date_created", "Household Income", "Employment Status", "Access to Healthcare"], False, True, None, correlation_engine
+        )
+        rows = fg.generate_batch_rows(batch_params)
+        self.assertEqual(len(rows), 5)
+        for row in rows:
+            self.assertTrue(0 <= row["Household Income"] <= 1000000)
+            self.assertIn(row["Employment Status"], fg.EMPLOYMENT_STATUS_OPTIONS)
+            self.assertIn(row["Access to Healthcare"], fg.HEALTHCARE_ACCESS_OPTIONS)
+
+    def test_save_files_chunked_large_dataset(self):
+        df = pd.DataFrame({"id": range(150000), "value": range(150000)})
+        prefix = "test_large"
+        fg.save_files_chunked(df, prefix, chunk_size=50000)
+        self.assertTrue(os.path.exists(os.path.join("output", f"{prefix}_part1.csv")))
+        self.assertTrue(os.path.exists(os.path.join("output", f"{prefix}_part2.csv")))
+        self.assertTrue(os.path.exists(os.path.join("output", f"{prefix}_part3.csv")))
+        # Clean up: Remove files first, then directory
+        for i in range(1, 4):
+            file_path = os.path.join("output", f"{prefix}_part{i}.csv")
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        # Remove the output directory if it exists and is empty
+        if os.path.exists("output") and not os.listdir("output"):
+            os.rmdir("output")
+
     def test_analyze_correlations(self):
         df = pd.DataFrame({
             "Income per Capita": [10000, 20000, 30000, 40000, 50000],
             "Poverty Rate": [40, 30, 20, 10, 5],
             "Education Level": [2, 4, 6, 8, 10]
         })
-        fg.analyze_correlations(df)  # Should print, test passes if no exception is thrown
+        fg.analyze_correlations(df)  # Should log, passes if no exception
 
-    @patch('builtins.open')
-    @patch('os.path.getsize')
-    @patch('pandas.DataFrame.to_csv')
-    @patch('pandas.DataFrame.to_excel')
-    def test_save_files_chunked(self, mock_to_excel, mock_to_csv, mock_getsize, mock_open):
-        mock_getsize.return_value = 1024
-        df = pd.DataFrame({"id": range(1, 101), "value": range(100)})
-        fg.save_files_chunked(df, "test_output", chunk_size=10)
-        self.assertEqual(mock_to_csv.call_count, 10)
+    def test_load_config(self):
+        config = fg.load_config(self.config_path)
+        self.assertEqual(config['format_choice'], 1)
+        self.assertEqual(config['include_demographic'], 'yes')
+        self.assertEqual(config['num_rows'], 10)
+
+    @patch('builtins.input')
+    def test_validate_input(self, mock_input):
+        mock_input.side_effect = ['1', 'yes', '10']
+        result = fg.validate_input("Test prompt: ", [1, 2], int)
+        self.assertEqual(result, 1)
+        result = fg.validate_input("Test prompt: ", ['yes', 'no'])
+        self.assertEqual(result, 'yes')
+        result = fg.validate_input("Test prompt: ", None, int)
+        self.assertEqual(result, 10)
 
 if __name__ == '__main__':
     unittest.main()

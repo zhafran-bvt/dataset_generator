@@ -10,42 +10,42 @@ on:
       include_demographic:
         description: 'Include demographic columns (Gender, Occupation, Education Level)? (yes/no)'
         required: true
-        default: 'no'
+        default: 'yes'
       include_economic:
         description: 'Include economic columns (Household Income, Employment Status, Access to Healthcare)? (yes/no)'
         required: true
-        default: 'no'
+        default: 'yes'
       num_columns:
         description: 'Enter number of columns (min 3, max 29 depending on demographic/economic choices)'
         required: true
-        default: '9'
+        default: '20'
       use_spatial_clustering:
         description: 'Use spatial clustering to create realistic population distributions? (yes/no)'
         required: true
-        default: 'no'
+        default: 'yes'
       area_choice:
         description: 'Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam'
         required: true
         default: '3'
       geojson_path:
         description: 'Enter path to GeoJSON file for land boundaries (e.g., geojson/id-jk.min.geojson for Jakarta, geojson/id.json for Indonesia)'
-        required: false
-        default: ''
+        required: true
+        default: 'geoJson/'
       num_rows:
         description: 'Enter number of rows'
         required: true
-        default: '10'
+        default: '1000'
       use_chunking:
         description: 'Use chunked file output for large datasets (>100,000 rows)? (yes/no)'
         required: false
-        default: 'false'
+        default: 'no'
       geometry_type:
         description: 'Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON'
         required: true
         default: '1'
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -56,6 +56,14 @@ jobs:
         with:
           python-version: '3.x'
 
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install dependencies
         run: |
           pip install pandas geopandas shapely openpyxl tqdm numpy scipy
@@ -63,6 +71,30 @@ jobs:
       - name: Run unit tests
         run: |
           python -m unittest test_file_generator.py -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          pip install pandas geopandas shapely openpyxl tqdm numpy scipy
 
       - name: Prepare inputs and run script
         run: |
