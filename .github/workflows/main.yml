@@ -35,6 +35,10 @@ on:
         description: 'Enter number of rows'
         required: true
         default: '10'
+      use_chunking:
+        description: 'Use chunked file output for large datasets (>100,000 rows)? (yes/no)'
+        required: false
+        default: 'false'
       geometry_type:
         description: 'Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON'
         required: true
@@ -94,6 +98,10 @@ jobs:
             fi
           fi
           echo "${{ inputs.num_rows }}" >> inputs.txt
+          # Include use_chunking only if num_rows > 100,000
+          if [ "${{ inputs.num_rows }}" -gt 100000 ]; then
+            echo "${{ inputs.use_chunking }}" >> inputs.txt
+          fi
           echo "${{ inputs.geometry_type }}" >> inputs.txt
 
           # Debug: Display the input sequence
