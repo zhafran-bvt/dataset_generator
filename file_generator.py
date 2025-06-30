@@ -17,22 +17,25 @@ import math
 from scipy.stats import multivariate_normal, gaussian_kde
 import logging
 import argparse
+import psutil
+import numba
+from functools import lru_cache
+from scipy import stats
+import matplotlib.pyplot as plt
 
-# Configure logging
+# --- CONFIGURATION ---
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Suppress warnings for cleaner output
 warnings.filterwarnings('ignore')
 
-# Define options for new categorical and economic columns
 GENDER_OPTIONS = ['Male', 'Female', 'Other']
 OCCUPATION_OPTIONS = ['Employed', 'Unemployed', 'Student', 'Retired', 'Homemaker', 'Other']
 EDUCATION_OPTIONS = ['Less than High School', 'High School', 'Some College', 'Associate Degree', "Bachelor's Degree", "Master's Degree", 'Doctorate']
 EMPLOYMENT_STATUS_OPTIONS = ['Full-time', 'Part-time', 'Self-employed', 'Unemployed', 'Retired', 'Student', 'Other']
 HEALTHCARE_ACCESS_OPTIONS = [True, False]
 
-# Constants for realistic data generation
 REALISTIC_LABELS = [
     "Population", "Birth Rate", "Death Rate", "Unemployment Rate",
     "Income per Capita", "GDP Growth", "Education Level",
@@ -42,8 +45,6 @@ REALISTIC_LABELS = [
     "Internet Penetration", "Energy Consumption",
     "Water Access", "Sanitation Access"
 ]
-
-# Define realistic ranges for each label
 VALUE_RANGES = {
     "Population": (1000, 1000000),
     "Birth Rate": (5, 30),
@@ -67,19 +68,6 @@ VALUE_RANGES = {
     "Sanitation Access": (50, 100),
     "Household Income": (0, 1000000)
 }
-
-# Define education level to numeric mapping
-EDUCATION_LEVEL_MAPPING = {
-    'Less than High School': 1,
-    'High School': 2,
-    'Some College': 3,
-    'Associate Degree': 4,
-    "Bachelor's Degree": 5,
-    "Master's Degree": 6,
-    'Doctorate': 7
-}
-
-# Define correlations between variables
 VARIABLE_CORRELATIONS = [
     ("Income per Capita", "Education Level", 0.7),
     ("Income per Capita", "Household Income", 0.85),
@@ -103,8 +91,6 @@ VARIABLE_CORRELATIONS = [
     ("GDP Growth", "Employment Rate", 0.6),
     ("GDP Growth", "Unemployment Rate", -0.5)
 ]
-
-# Define bounding boxes for each area
 BOUNDING_BOXES = {
     1: {"name": "Jakarta", "lon_min": 106.65, "lon_max": 106.95, "lat_min": -6.35, "lat_max": -6.1},
     2: {"name": "Yogyakarta", "lon_min": 110.35, "lon_max": 110.5, "lat_min": -7.85, "lat_max": -7.75},
@@ -114,7 +100,6 @@ BOUNDING_BOXES = {
 }
 
 def validate_input(prompt, valid_options, type_cast=str, allow_empty=False):
-    """Validate user input against valid options."""
     while True:
         try:
             value = input(prompt).strip()
@@ -129,172 +114,157 @@ def validate_input(prompt, valid_options, type_cast=str, allow_empty=False):
             logger.warning(f"Invalid input. Expected a {type_cast.__name__}.")
 
 def load_config(config_path):
-    """Load configuration from a JSON file."""
-    try:
-        with open(config_path, 'r') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading config file: {e}")
-        raise
+    with open(config_path, 'r') as f:
+        return json.load(f)
 
 class CorrelationEngine:
-    """Handle generation of correlated values for dataset labels."""
     def __init__(self, correlations, value_ranges):
         self.correlations = correlations
         self.value_ranges = value_ranges
-
-    def generate_values(self, labels, seed=None):
+    def generate_batch_values(self, labels, batch_size=10000, seed=None):
         if seed is not None:
             np.random.seed(seed)
-        normalized_values = {label: random.random() for label in labels if label in self.value_ranges}
+        values = {label: np.random.random(batch_size) for label in labels if label in self.value_ranges}
         for _ in range(3):
             for var1, var2, corr_strength in self.correlations:
-                if var1 in normalized_values and var2 in normalized_values:
-                    val1 = normalized_values[var1]
+                if var1 in values and var2 in values:
+                    val1 = values[var1]
                     target_val2 = val1 if corr_strength > 0 else 1 - val1
-                    adjustment = (target_val2 - normalized_values[var2]) * abs(corr_strength) * 0.5
-                    normalized_values[var2] = np.clip(normalized_values[var2] + adjustment, 0, 1)
+                    adjustment = (target_val2 - values[var2]) * abs(corr_strength) * 0.5
+                    values[var2] = np.clip(values[var2] + adjustment, 0, 1)
         result = {}
-        for label, norm_val in normalized_values.items():
+        for label, norm_vals in values.items():
             min_val, max_val = self.value_ranges[label]
-            result[label] = round(norm_val * (max_val - min_val) + min_val, 2)
-        if "Education Level" in labels and "Education Level" in result:
-            edu_level_num = int(result["Education Level"])
-            edu_level_num = max(1, min(edu_level_num, 10))
-            if edu_level_num <= 2:
-                result["Education Level"] = "Less than High School"
-            elif edu_level_num <= 4:
-                result["Education Level"] = "High School"
-            elif edu_level_num <= 5:
-                result["Education Level"] = "Some College"
-            elif edu_level_num <= 6:
-                result["Education Level"] = "Associate Degree"
-            elif edu_level_num <= 8:
-                result["Education Level"] = "Bachelor's Degree"
-            elif edu_level_num <= 9:
-                result["Education Level"] = "Master's Degree"
+            result[label] = norm_vals * (max_val - min_val) + min_val
+            if label == "Education Level":
+                edu_levels = []
+                for val in result[label]:
+                    edu_num = int(val)
+                    edu_num = max(1, min(edu_num, 10))
+                    if edu_num <= 2:
+                        edu_levels.append("Less than High School")
+                    elif edu_num <= 4:
+                        edu_levels.append("High School")
+                    elif edu_num <= 5:
+                        edu_levels.append("Some College")
+                    elif edu_num <= 6:
+                        edu_levels.append("Associate Degree")
+                    elif edu_num <= 8:
+                        edu_levels.append("Bachelor's Degree")
+                    elif edu_num <= 9:
+                        edu_levels.append("Master's Degree")
+                    else:
+                        edu_levels.append("Doctorate")
+                result[label] = np.array(edu_levels)
             else:
-                result["Education Level"] = "Doctorate"
+                result[label] = np.round(result[label], 2)
         return result
 
-def generate_random_datetime():
-    """Generate a random datetime in 2025 in ISO 8601 format."""
-    start = datetime(2025, 1, 1, 0, 0, 0)
-    end = datetime(2025, 12, 31, 23, 59, 59)
-    delta = end - start
-    random_seconds = random.randint(0, int(delta.total_seconds()))
-    random_dt = start + timedelta(seconds=random_seconds)
-    return random_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+def generate_random_datetimes(n):
+    start_ts = datetime(2025, 1, 1, 0, 0, 0).timestamp()
+    end_ts = datetime(2025, 12, 31, 23, 59, 59).timestamp()
+    random_ts = np.random.uniform(start_ts, end_ts, n)
+    dates = []
+    for ts in random_ts:
+        dt = datetime.fromtimestamp(ts)
+        dates.append(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return dates
 
-def normalize_value(value, min_val, max_val):
-    """Normalize a value to be between 0 and 1."""
-    return (value - min_val) / (max_val - min_val)
+@numba.njit
+def is_point_in_polygon(polygon_coords, point):
+    x, y = point
+    n = len(polygon_coords)
+    inside = False
+    p1x, p1y = polygon_coords[0]
+    for i in range(1, n):
+        p2x, p2y = polygon_coords[i]
+        if y > min(p1y, p2y) and y <= max(p1y, p2y) and x <= max(p1x, p2x):
+            if p1y != p2y:
+                xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                if p1x == p2x or x <= xinters:
+                    inside = not inside
+        p1x, p1y = p2x, p2y
+    return inside
 
-def denormalize_value(normalized_value, min_val, max_val):
-    """Convert a normalized value back to its original range."""
-    return normalized_value * (max_val - min_val) + min_val
+def get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, count):
+    lons = np.random.uniform(lon_min, lon_max, count)
+    lats = np.random.uniform(lat_min, lat_max, count)
+    return np.column_stack((lons, lats))
 
-def random_point_in_geometry(geometry):
-    """Generate a random point within a given geometry."""
-    minx, miny, maxx, maxy = geometry.bounds
-    while True:
-        point = Point(random.uniform(minx, maxx), random.uniform(miny, maxy))
-        if geometry.contains(point):
-            return point
+def extract_polygon_coords(land_geometry):
+    if isinstance(land_geometry, Polygon):
+        return [np.array(land_geometry.exterior.coords)]
+    elif isinstance(land_geometry, MultiPolygon):
+        return [np.array(geom.exterior.coords) for geom in land_geometry.geoms]
+    return []
 
-def load_land_geometry(geojson_path, simplify_tolerance=0.0001):
-    """Load land geometry from a GeoJSON file, combining all features."""
-    try:
-        gdf = gpd.read_file(geojson_path)
-        if gdf.empty:
-            logger.error("No geometries found in the GeoJSON file.")
-            return None
-        file_size_mb = os.path.getsize(geojson_path) / (1024 * 1024)
-        if file_size_mb > 10:
-            logger.info(f"Large GeoJSON file detected ({file_size_mb:.2f} MB). Simplifying geometries...")
-            gdf['geometry'] = gdf['geometry'].simplify(simplify_tolerance, preserve_topology=True)
-        combined_geometry = unary_union(gdf['geometry'].values)
-        return combined_geometry
-    except Exception as e:
-        logger.error(f"Error loading GeoJSON file: {e}")
-        return None
+def random_sample_uniform(n, lon_min, lon_max, lat_min, lat_max):
+    return get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
 
-def generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None, spatial_clusters=None):
-    """Generate random geometry within bounds or land geometry."""
-    if spatial_clusters is not None and random.random() < spatial_clusters['use_probability']:
-        x, y = spatial_clusters['model'].resample(1).T[0]
-        lon = np.clip(x, lon_min, lon_max)
-        lat = np.clip(y, lat_min, lat_max)
-        if land_geometry and not land_geometry.contains(Point(lon, lat)):
-            point = random_point_in_geometry(land_geometry)
-            lon, lat = point.x, point.y
-    elif land_geometry:
-        point = random_point_in_geometry(land_geometry)
-        lon, lat = point.x, point.y
-    else:
-        lon = random.uniform(lon_min, lon_max)
-        lat = random.uniform(lat_min, lat_max)
-    
+def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, batch_size=1000):
+    points = []
+    attempts = 0
+    max_attempts = n * 10
+    while len(points) < n and attempts < max_attempts:
+        candidates = get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, min(batch_size, n - len(points)))
+        for point in candidates:
+            if len(points) >= n:
+                break
+            for poly in polygons:
+                if is_point_in_polygon(poly, point):
+                    points.append(point)
+                    break
+        attempts += len(candidates)
+    if len(points) < n:
+        remaining = n - len(points)
+        points.extend(get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, remaining))
+    return np.array(points[:n])
+
+def generate_random_geom_batch(params):
+    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id = params
+    geoms = []
     if geom_type == "POINT":
         if format_type == "WKT":
-            return f"POINT ({lon:.6f} {lat:.6f})"
-        return json.dumps({"type": "Point", "coordinates": [lon, lat]})
-    
+            for i in range(n):
+                lon, lat = points[i]
+                geoms.append(f"POINT ({lon:.6f} {lat:.6f})")
+        else:
+            for i in range(n):
+                lon, lat = points[i]
+                geoms.append(json.dumps({"type": "Point", "coordinates": [lon, lat]}))
     elif geom_type in ["POLYGON", "MULTIPOLYGON"]:
         lon_extent = lon_max - lon_min
         lat_extent = lat_max - lat_min
-        width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
-        height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
-        coords = [
-            [lon, lat],
-            [lon + width, lat],
-            [lon + width, lat + height],
-            [lon, lat + height],
-            [lon, lat]
-        ]
-        initial_polygon = Polygon(coords)
-        if land_geometry:
-            clipped_geometry = land_geometry.intersection(initial_polygon)
-            if clipped_geometry.is_empty:
-                width = lon_extent * 0.005
-                height = lat_extent * 0.005
-                coords = [
-                    [lon, lat],
-                    [lon + width, lat],
-                    [lon + width, lat + height],
-                    [lon, lat + height],
-                    [lon, lat]
-                ]
-                clipped_geometry = land_geometry.intersection(Polygon(coords))
-            if isinstance(clipped_geometry, Polygon):
-                coords = list(clipped_geometry.exterior.coords)
-            elif isinstance(clipped_geometry, MultiPolygon):
-                coords = list(clipped_geometry.geoms[0].exterior.coords)
+        for i in range(n):
+            lon, lat = points[i]
+            width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
+            height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
+            coords = [
+                [lon, lat],
+                [lon + width, lat],
+                [lon + width, lat + height],
+                [lon, lat + height],
+                [lon, lat]
+            ]
+            if format_type == "WKT":
+                coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
+                if geom_type == "POLYGON":
+                    geoms.append(f"POLYGON (({coord_str}))")
+                else:
+                    geoms.append(f"MULTIPOLYGON ((({coord_str})))")
             else:
-                coords = [[lon, lat], [lon, lat], [lon, lat], [lon, lat], [lon, lat]]
-        else:
-            clipped_geometry = initial_polygon
-            coords = list(clipped_geometry.exterior.coords)
-        if format_type == "WKT":
-            coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
-            if geom_type == "POLYGON":
-                return f"POLYGON (({coord_str}))"
-            return f"MULTIPOLYGON ((({coord_str})))"
-        if geom_type == "POLYGON":
-            return json.dumps({"type": "Polygon", "coordinates": [coords]})
-        return json.dumps({"type": "MultiPolygon", "coordinates": [[coords]]})
+                if geom_type == "POLYGON":
+                    geoms.append(json.dumps({"type": "Polygon", "coordinates": [coords]}))
+                else:
+                    geoms.append(json.dumps({"type": "MultiPolygon", "coordinates": [[coords]]}))
+    return geoms
 
 def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geometry, cluster_count=5, points_per_cluster=200):
-    """Create a spatial clustering model for realistic population distributions."""
-    centers = []
-    for _ in range(cluster_count):
-        if land_geometry:
-            point = random_point_in_geometry(land_geometry)
-            centers.append((point.x, point.y))
-        else:
-            lon = random.uniform(lon_min, lon_max)
-            lat = random.uniform(lat_min, lat_max)
-            centers.append((lon, lat))
+    if land_geometry:
+        polygons = extract_polygon_coords(land_geometry)
+        centers = random_sample_in_geometry(cluster_count, polygons, lon_min, lon_max, lat_min, lat_max)
+    else:
+        centers = get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, cluster_count)
     samples = []
     weights = np.random.uniform(0.5, 1.5, cluster_count)
     weights = weights / np.sum(weights)
@@ -311,71 +281,89 @@ def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geo
         y = np.clip(y, lat_min, lat_max)
         samples.extend([[x[j], y[j]] for j in range(cluster_points)])
     samples = np.array(samples)
+    kde_model = gaussian_kde(samples.T)
     return {
-        'model': gaussian_kde(samples.T),
+        'model': kde_model,
         'use_probability': 0.85,
         'centers': centers
     }
 
-def generate_batch_rows(batch_params):
-    """Generate a batch of rows for parallel processing."""
-    start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry, labels, include_demographic, include_economic, spatial_clusters, correlation_engine = batch_params
+def generate_points_for_batch(params):
+    batch_size, lon_min, lon_max, lat_min, lat_max, use_spatial_clustering, spatial_clusters, polygons = params
+    if use_spatial_clustering and spatial_clusters and random.random() < spatial_clusters['use_probability']:
+        samples = spatial_clusters['model'].resample(batch_size)
+        points = np.column_stack((samples[0], samples[1]))
+        points[:, 0] = np.clip(points[:, 0], lon_min, lon_max)
+        points[:, 1] = np.clip(points[:, 1], lat_min, lat_max)
+        if polygons:
+            for i in range(len(points)):
+                is_valid = False
+                for poly in polygons:
+                    if is_point_in_polygon(poly, points[i]):
+                        is_valid = True
+                        break
+                if not is_valid:
+                    valid_points = random_sample_in_geometry(1, polygons, lon_min, lon_max, lat_min, lat_max)
+                    points[i] = valid_points[0]
+    elif polygons:
+        points = random_sample_in_geometry(batch_size, polygons, lon_min, lon_max, lat_min, lat_max)
+    else:
+        points = random_sample_uniform(batch_size, lon_min, lon_max, lat_min, lat_max)
+    return points
+
+def generate_batch_data(batch_params):
+    (start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
+     polygons, labels, include_demographic, include_economic, spatial_clusters, 
+     correlation_engine, use_spatial_clustering, batch_id) = batch_params
+    points = generate_points_for_batch((
+        batch_size, lon_min, lon_max, lat_min, lat_max,
+        use_spatial_clustering, spatial_clusters, polygons
+    ))
+    geoms = generate_random_geom_batch((
+        geom_type, format_type, batch_size, lon_min, lon_max, lat_min, lat_max, 
+        points, batch_id
+    ))
+    ids = list(range(start_id, start_id + batch_size))
+    dates = generate_random_datetimes(batch_size)
+    correlated_values = correlation_engine.generate_batch_values(labels, batch_size, seed=start_id)
     data = []
-    existing_geometries = []
-    tree = STRtree(existing_geometries) if existing_geometries else None
-    attempts = 0
-    max_attempts = 1000
-    while len(data) < batch_size and attempts < max_attempts:
-        geom = generate_random_geom(geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry, spatial_clusters)
-        if format_type == "WKT":
-            current_geometry = loads(geom)
-        else:
-            current_geometry = shape(json.loads(geom))
-        if tree and tree.query(current_geometry).size > 0:
-            attempts += 1
-            continue
-        existing_geometries.append(current_geometry)
-        tree = STRtree(existing_geometries)
-        row = {"id": start_id + len(data) + 1}
-        row["geom"] = geom
-        row["date_created"] = generate_random_datetime()
-        correlated_values = correlation_engine.generate_values(labels, seed=row["id"])
+    for i in range(batch_size):
+        row = {"id": ids[i], "geom": geoms[i], "date_created": dates[i]}
         if include_demographic:
             row["Gender"] = random.choice(GENDER_OPTIONS)
             row["Occupation"] = random.choice(OCCUPATION_OPTIONS)
-            if "Education Level" not in correlated_values:
-                row["Education Level"] = random.choice(EDUCATION_OPTIONS)
+            if "Education Level" in correlated_values:
+                row["Education Level"] = correlated_values["Education Level"][i]
             else:
-                row["Education Level"] = correlated_values["Education Level"]
+                row["Education Level"] = random.choice(EDUCATION_OPTIONS)
         if include_economic:
             if "Household Income" in correlated_values:
-                row["Household Income"] = correlated_values["Household Income"]
+                row["Household Income"] = correlated_values["Household Income"][i]
             row["Employment Status"] = random.choice(EMPLOYMENT_STATUS_OPTIONS)
             row["Access to Healthcare"] = random.choice(HEALTHCARE_ACCESS_OPTIONS)
         for label in labels:
             if label not in row and label not in ["id", "geom", "date_created"]:
                 if label in correlated_values:
-                    row[label] = correlated_values[label]
+                    row[label] = correlated_values[label][i]
                 else:
                     min_val, max_val = VALUE_RANGES.get(label, (0, 100))
                     row[label] = round(random.uniform(min_val, max_val), 2)
         data.append(row)
-        attempts = 0
     return data
 
 def save_files_chunked(df, filename_prefix, chunk_size=100000):
-    """Save DataFrame to CSV and Excel files with chunking for large files."""
     output_dir = "output"
     os.makedirs(output_dir, exist_ok=True)
-    csv_file = os.path.join(output_dir, f"{filename_prefix}.csv")
-    excel_file = os.path.join(output_dir, f"{filename_prefix}.xlsx")
     total_rows = len(df)
     if total_rows <= chunk_size:
+        csv_file = os.path.join(output_dir, f"{filename_prefix}.csv")
         df.to_csv(csv_file, index=False, encoding='utf-8')
         logger.info(f"Saved: {csv_file} ({os.path.getsize(csv_file) / 1024 / 1024:.2f} MB)")
         try:
             if total_rows <= 1000000:
-                df.to_excel(excel_file, index=False)
+                excel_file = os.path.join(output_dir, f"{filename_prefix}.xlsx")
+                with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Data')
                 logger.info(f"Saved: {excel_file} ({os.path.getsize(excel_file) / 1024 / 1024:.2f} MB)")
             else:
                 logger.warning("Dataset too large for Excel (> 1M rows). Excel file not created.")
@@ -397,63 +385,10 @@ def save_files_chunked(df, filename_prefix, chunk_size=100000):
         logger.info(f"CSV data saved in {num_chunks} chunks in the '{output_dir}' directory.")
         logger.warning("Excel file not created for chunked data (dataset too large).")
 
-def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, land_geometry=None, include_demographic=False, include_economic=False, use_spatial_clustering=False, cluster_count=5, points_per_cluster=200):
-    """Generate a DataFrame with random data using parallel processing."""
-    fixed_columns = ["id", "geom", "date_created"]
-    if include_demographic:
-        fixed_columns += ["Gender", "Occupation", "Education Level"]
-    if include_economic:
-        fixed_columns += ["Household Income", "Employment Status", "Access to Healthcare"]
-    max_cols = len(REALISTIC_LABELS) + len(fixed_columns)
-    if cols > max_cols:
-        cols = max_cols
-    num_additional = cols - len(fixed_columns)
-    additional_labels = random.sample(REALISTIC_LABELS, min(num_additional, len(REALISTIC_LABELS))) if num_additional > 0 else []
-    labels = fixed_columns + additional_labels
-    spatial_clusters = None
-    if use_spatial_clustering:
-        logger.info("Creating spatial clustering model...")
-        spatial_clusters = create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geometry, cluster_count, points_per_cluster)
-        logger.info(f"Created model with {len(spatial_clusters['centers'])} population clusters")
-    num_cores = max(1, mp.cpu_count() - 1)
-    logger.info(f"Using {num_cores} CPU cores for parallel processing")
-    batch_size = max(100, rows // num_cores)
-    num_batches = math.ceil(rows / batch_size)
-    correlation_engine = CorrelationEngine(VARIABLE_CORRELATIONS, VALUE_RANGES)
-    batch_params = [
-        (i * batch_size, 
-         min(batch_size, rows - i * batch_size),
-         geom_type, 
-         format_type, 
-         lon_min, 
-         lon_max, 
-         lat_min, 
-         lat_max, 
-         land_geometry, 
-         labels, 
-         include_demographic, 
-         include_economic,
-         spatial_clusters,
-         correlation_engine) 
-        for i in range(num_batches)
-    ]
-    progress = tqdm(total=rows, desc="Generating rows")
-    all_data = []
-    with ProcessPoolExecutor(max_workers=num_cores) as executor:
-        future_to_batch = {executor.submit(generate_batch_rows, params): params for params in batch_params}
-        for future in as_completed(future_to_batch):
-            batch_data = future.result()
-            all_data.extend(batch_data)
-            progress.update(len(batch_data))
-    progress.close()
-    logger.info(f"Generated {len(all_data)} rows of data")
-    df = pd.DataFrame(all_data, columns=labels)
-    logger.info("Analyzing correlations in generated data...")
-    analyze_correlations(df)
-    return df
-
-def analyze_correlations(df):
-    """Analyze and log correlations between variables."""
+def analyze_correlations(df, sample_size=10000):
+    if len(df) > sample_size:
+        logger.info(f"Sampling {sample_size:,} rows for correlation analysis")
+        df = df.sample(sample_size)
     numeric_df = df.select_dtypes(include=['number'])
     if len(numeric_df.columns) < 2:
         logger.warning("Not enough numeric columns for correlation analysis.")
@@ -469,17 +404,347 @@ def analyze_correlations(df):
             logger.info(f"{var1} vs {var2:<20} | {target_corr:8.2f} | {actual_corr:8.2f}")
     logger.info("-" * 50)
 
+def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
+                              land_geometry=None, include_demographic=False, include_economic=False, 
+                              use_spatial_clustering=False, cluster_count=5, points_per_cluster=200):
+    fixed_columns = ["id", "geom", "date_created"]
+    if include_demographic:
+        fixed_columns += ["Gender", "Occupation", "Education Level"]
+    if include_economic:
+        fixed_columns += ["Household Income", "Employment Status", "Access to Healthcare"]
+    max_cols = len(REALISTIC_LABELS) + len(fixed_columns)
+    if cols > max_cols:
+        cols = max_cols
+    num_additional = cols - len(fixed_columns)
+    additional_labels = random.sample(REALISTIC_LABELS, min(num_additional, len(REALISTIC_LABELS))) if num_additional > 0 else []
+    labels = fixed_columns + additional_labels
+    polygons = []
+    if land_geometry:
+        polygons = extract_polygon_coords(land_geometry)
+        logger.info(f"Extracted {len(polygons)} polygon(s) for efficient point-in-polygon testing")
+    spatial_clusters = None
+    if use_spatial_clustering:
+        logger.info("Creating spatial clustering model...")
+        spatial_clusters = create_spatial_clustering_model(
+            lon_min, lon_max, lat_min, lat_max, land_geometry, 
+            cluster_count, points_per_cluster
+        )
+        logger.info(f"Created model with {len(spatial_clusters['centers'])} population clusters")
+    system_cores = mp.cpu_count()
+    recommended_cores = max(1, system_cores - 1)
+    if rows < 10000:
+        recommended_cores = max(1, min(2, recommended_cores))
+    num_cores = recommended_cores
+    logger.info(f"Using {num_cores} CPU cores for parallel processing")
+    mem_per_core = psutil.virtual_memory().available / (num_cores * 1.5)
+    est_row_size = 1000
+    batch_size_by_mem = int(mem_per_core / est_row_size)
+    batch_size = min(max(100, rows // (num_cores * 2)), batch_size_by_mem)
+    if rows > 1000000:
+        batch_size = min(50000, batch_size)
+    logger.info(f"Using batch size of {batch_size:,} rows")
+    correlation_engine = CorrelationEngine(VARIABLE_CORRELATIONS, VALUE_RANGES)
+    num_batches = math.ceil(rows / batch_size)
+    batch_params = [
+        (i * batch_size + 1,
+         min(batch_size, rows - i * batch_size),
+         geom_type, 
+         format_type, 
+         lon_min, 
+         lon_max, 
+         lat_min, 
+         lat_max,
+         polygons,
+         labels, 
+         include_demographic, 
+         include_economic,
+         spatial_clusters,
+         correlation_engine,
+         use_spatial_clustering,
+         i)
+        for i in range(num_batches)
+    ]
+    all_data = []
+    with tqdm(total=rows, desc="Generating data") as progress:
+        with ProcessPoolExecutor(max_workers=num_cores) as executor:
+            futures = [executor.submit(generate_batch_data, params) for params in batch_params]
+            for future in as_completed(futures):
+                try:
+                    batch_data = future.result()
+                    all_data.extend(batch_data)
+                    progress.update(len(batch_data))
+                except Exception as e:
+                    logger.error(f"Error in batch processing: {e}")
+    logger.info(f"Converting {len(all_data):,} rows to DataFrame")
+    df = pd.DataFrame(all_data, columns=labels)
+    for col in df.columns:
+        if col in ["id"]:
+            df[col] = df[col].astype('int32')
+        elif col in ["Household Income", "Population"]:
+            df[col] = df[col].astype('float32')
+    logger.info("Analyzing correlations in generated data...")
+    analyze_correlations(df)
+    return df
+
+# --- DATA VALIDATOR CLASS ---
+
+class DataValidator:
+    def __init__(self, validation_options=None):
+        self.validation_options = validation_options or {
+            'correlation_tolerance': 0.15,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': True,
+            'report_dir': 'validation_reports'
+        }
+        if self.validation_options['generate_reports']:
+            os.makedirs(self.validation_options['report_dir'], exist_ok=True)
+    def validate_statistical_properties(self, df, expected_correlations, value_ranges):
+        validation_results = {
+            'passed': True,
+            'correlation_issues': [],
+            'distribution_issues': [],
+            'range_issues': [],
+            'outliers': {}
+        }
+        numeric_df = df.select_dtypes(include=['number'])
+        if len(numeric_df.columns) >= 2:
+            corr_matrix = numeric_df.corr()
+            for var1, var2, expected_corr in expected_correlations:
+                if var1 in corr_matrix.columns and var2 in corr_matrix.columns:
+                    actual_corr = corr_matrix.loc[var1, var2]
+                    diff = abs(actual_corr - expected_corr)
+                    if diff > self.validation_options['correlation_tolerance']:
+                        validation_results['passed'] = False
+                        validation_results['correlation_issues'].append({
+                            'variables': (var1, var2),
+                            'expected': expected_corr,
+                            'actual': actual_corr,
+                            'difference': diff
+                        })
+        for col in df.columns:
+            if col in value_ranges and pd.api.types.is_numeric_dtype(df[col]):
+                min_val, max_val = value_ranges[col]
+                actual_min, actual_max = df[col].min(), df[col].max()
+                if actual_min < min_val or actual_max > max_val:
+                    validation_results['passed'] = False
+                    validation_results['range_issues'].append({
+                        'variable': col,
+                        'expected_range': (min_val, max_val),
+                        'actual_range': (actual_min, actual_max)
+                    })
+                z_scores = stats.zscore(df[col])
+                outliers = np.abs(z_scores) > self.validation_options['outlier_threshold']
+                if outliers.any():
+                    outlier_count = outliers.sum()
+                    outlier_percentage = (outlier_count / len(df)) * 100
+                    validation_results['outliers'][col] = {
+                        'count': int(outlier_count),
+                        'percentage': float(outlier_percentage),
+                        'indices': df.index[outliers].tolist()[:100]
+                    }
+        if self.validation_options['generate_reports']:
+            self._generate_statistical_report(df, validation_results, expected_correlations)
+        return validation_results
+    def validate_geometries(self, df, geom_column='geom', format_type='WKT'):
+        import shapely
+        from shapely.validation import explain_validity
+        validation_results = {
+            'passed': True,
+            'total_geometries': len(df),
+            'valid_count': 0,
+            'invalid_count': 0,
+            'repaired_count': 0,
+            'invalid_samples': [],
+            'bounds_issues': [],
+        }
+        bounds = None
+        if hasattr(self, 'lon_min') and hasattr(self, 'lon_max') and hasattr(self, 'lat_min') and hasattr(self, 'lat_max'):
+            bounds = (self.lon_min, self.lat_min, self.lon_max, self.lat_max)
+        for i, geom_str in enumerate(df[geom_column]):
+            try:
+                if format_type == 'WKT':
+                    geom = shapely.wkt.loads(geom_str)
+                else:
+                    geom = shape(json.loads(geom_str))
+                if geom.is_valid:
+                    validation_results['valid_count'] += 1
+                else:
+                    reason = explain_validity(geom)
+                    validation_results['invalid_count'] += 1
+                    if len(validation_results['invalid_samples']) < 10:
+                        validation_results['invalid_samples'].append({
+                            'index': i,
+                            'geometry': geom_str,
+                            'reason': reason
+                        })
+                    if self.validation_options['repair_geometries']:
+                        try:
+                            repaired = geom.buffer(0)
+                            if repaired.is_valid:
+                                validation_results['repaired_count'] += 1
+                                if format_type == 'WKT':
+                                    df.at[i, geom_column] = repaired.wkt
+                                else:
+                                    df.at[i, geom_column] = json.dumps(shapely.geometry.mapping(repaired))
+                        except Exception as e:
+                            logger.warning(f"Failed to repair geometry at index {i}: {e}")
+                if bounds and not geom.is_empty:
+                    geom_bounds = geom.bounds
+                    if (geom_bounds[0] < bounds[0] or geom_bounds[2] > bounds[2] or 
+                        geom_bounds[1] < bounds[1] or geom_bounds[3] > bounds[3]):
+                        validation_results['bounds_issues'].append({
+                            'index': i,
+                            'geometry_bounds': geom_bounds,
+                            'expected_bounds': bounds
+                        })
+            except Exception as e:
+                validation_results['invalid_count'] += 1
+                if len(validation_results['invalid_samples']) < 10:
+                    validation_results['invalid_samples'].append({
+                        'index': i,
+                        'geometry': geom_str,
+                        'error': str(e)
+                    })
+        validity_percentage = (validation_results['valid_count'] / 
+                               validation_results['total_geometries']) if validation_results['total_geometries'] > 0 else 0
+        validation_results['validity_percentage'] = validity_percentage * 100
+        validation_results['passed'] = (validity_percentage >= 
+                                       self.validation_options['min_valid_geometries'])
+        if self.validation_options['generate_reports']:
+            self._generate_geometry_report(df, validation_results, format_type)
+        return validation_results
+    def _generate_statistical_report(self, df, validation_results, expected_correlations):
+        report_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+        report_path = os.path.join(self.validation_options['report_dir'], f'stat_report_{report_time}.pdf')
+        plt.figure(figsize=(15, 12))
+        numeric_df = df.select_dtypes(include=['number'])
+        if len(numeric_df.columns) >= 2:
+            plt.subplot(2, 2, 1)
+            corr_matrix = numeric_df.corr()
+            plt.imshow(corr_matrix, cmap='coolwarm', vmin=-1, vmax=1)
+            plt.colorbar()
+            plt.title('Correlation Matrix')
+            plt.xticks(range(len(corr_matrix.columns)), corr_matrix.columns, rotation=90)
+            plt.yticks(range(len(corr_matrix.columns)), corr_matrix.columns)
+            for issue in validation_results['correlation_issues']:
+                var1, var2 = issue['variables']
+                if var1 in corr_matrix.columns and var2 in corr_matrix.columns:
+                    i = list(corr_matrix.columns).index(var1)
+                    j = list(corr_matrix.columns).index(var2)
+                    plt.plot(j, i, 'rx', markersize=10)
+        key_vars = ['Population', 'Income per Capita', 'Education Level', 'Health Index']
+        key_vars = [var for var in key_vars if var in df.columns]
+        for i, var in enumerate(key_vars[:3]):
+            plt.subplot(2, 2, i+2)
+            if pd.api.types.is_numeric_dtype(df[var]):
+                df[var].hist(bins=30)
+                plt.title(f'Distribution of {var}')
+                plt.xlabel(var)
+                plt.ylabel('Frequency')
+                plt.axvline(df[var].mean(), color='r', linestyle='--', label=f'Mean: {df[var].mean():.2f}')
+                plt.axvline(df[var].median(), color='g', linestyle='-', label=f'Median: {df[var].median():.2f}')
+                plt.legend()
+        plt.tight_layout()
+        plt.savefig(report_path)
+        plt.close()
+        logger.info(f"Statistical validation report saved to {report_path}")
+    def _generate_geometry_report(self, df, validation_results, format_type):
+        import json
+        report_time = datetime.now().strftime('%Y%m%d_%H%M%S')
+        report_path = os.path.join(self.validation_options['report_dir'], 
+                                   f'geom_report_{report_time}.json')
+        report = {
+            'timestamp': datetime.now().isoformat(),
+            'summary': {
+                'total_geometries': validation_results['total_geometries'],
+                'valid_percentage': validation_results['validity_percentage'],
+                'invalid_count': validation_results['invalid_count'],
+                'repaired_count': validation_results['repaired_count'],
+                'passed_validation': validation_results['passed']
+            },
+            'invalid_samples': validation_results['invalid_samples'][:10],
+            'bounds_issues': validation_results['bounds_issues'][:10]
+        }
+        with open(report_path, 'w') as f:
+            json.dump(report, f, indent=2)
+        logger.info(f"Geometry validation report saved to {report_path}")
+    def validate_dataset(self, df, expected_correlations, value_ranges, geom_column='geom', format_type='WKT'):
+        sample_size = 100000
+        validate_df = df if len(df) <= sample_size else df.sample(sample_size)
+        logger.info(f"Starting dataset validation on {len(validate_df):,} rows")
+        logger.info("Validating statistical properties...")
+        stat_results = self.validate_statistical_properties(
+            validate_df, expected_correlations, value_ranges)
+        logger.info("Validating geometries...")
+        geom_results = self.validate_geometries(validate_df, geom_column, format_type)
+        results = {
+            'passed': stat_results['passed'] and geom_results['passed'],
+            'statistical_validation': stat_results,
+            'geometry_validation': geom_results,
+            'timestamp': datetime.now().isoformat()
+        }
+        logger.info("\n=== Validation Summary ===")
+        logger.info(f"Overall validation: {'PASSED' if results['passed'] else 'FAILED'}")
+        logger.info(f"Statistical validation: {'PASSED' if stat_results['passed'] else 'FAILED'}")
+        logger.info(f"- Correlation issues: {len(stat_results['correlation_issues'])}")
+        logger.info(f"- Distribution issues: {len(stat_results['distribution_issues'])}")
+        logger.info(f"- Range issues: {len(stat_results['range_issues'])}")
+        logger.info(f"- Variables with outliers: {len(stat_results['outliers'])}")
+        logger.info(f"Geometry validation: {'PASSED' if geom_results['passed'] else 'FAILED'}")
+        logger.info(f"- Valid geometries: {geom_results['valid_count']:,} ({geom_results['validity_percentage']:.2f}%)")
+        logger.info(f"- Invalid geometries: {geom_results['invalid_count']:,}")
+        logger.info(f"- Repaired geometries: {geom_results['repaired_count']:,}")
+        logger.info(f"- Bounds issues: {len(geom_results['bounds_issues'])}")
+        logger.info("==========================")
+        if self.validation_options['generate_reports']:
+            report_path = os.path.join(
+                self.validation_options['report_dir'], 
+                f'validation_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+            )
+            with open(report_path, 'w') as f:
+                json.dump(results, f, indent=2)
+            logger.info(f"Comprehensive validation report saved to {report_path}")
+        return results
+
+def validate_generated_data(df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max):
+    logger.info("Starting data validation...")
+    validator = DataValidator({
+        'correlation_tolerance': 0.45,
+        'outlier_threshold': 3.0,
+        'min_valid_geometries': 0.99,
+        'repair_geometries': True,
+        'generate_reports': True,
+        'report_dir': 'validation_reports'
+    })
+    validator.lon_min = lon_min
+    validator.lon_max = lon_max
+    validator.lat_min = lat_min
+    validator.lat_max = lat_max
+    results = validator.validate_dataset(
+        df, 
+        VARIABLE_CORRELATIONS,
+        VALUE_RANGES,
+        'geom',
+        'WKT' if format_type == "WKT" else 'GeoJSON'
+    )
+    if results['geometry_validation']['repaired_count'] > 0:
+        logger.info(f"Repaired {results['geometry_validation']['repaired_count']} geometries")
+        return df, results
+    return df, results
+
+# --- MAIN ENTRYPOINT ---
+
 if __name__ == "__main__":
-    logger.info("Dataset Generator with Performance Improvements")
+    logger.info("Dataset Generator with Validation")
     logger.info("==============================================")
-    logger.info("Last update: 2025-06-19 13:34:10")
+    logger.info(f"Last update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("Author: zhafran-bvt")
     logger.info("==============================================")
-
     parser = argparse.ArgumentParser(description="Dataset Generator")
     parser.add_argument('--config', help="Path to JSON config file")
     args = parser.parse_args()
-
     if args.config:
         config = load_config(args.config)
         format_choice = config['format_choice']
@@ -496,7 +761,6 @@ if __name__ == "__main__":
         format_choice = validate_input("Choose format: 1 for WKT, 2 for GeoJSON\nEnter choice: ", [1, 2], int)
         include_demographic = validate_input("Include demographic columns (Gender, Occupation, Education Level)? (yes/no): ", ['yes', 'no']).lower() == 'yes'
         include_economic = validate_input("Include economic columns (Household Income, Employment Status, Access to Healthcare)? (yes/no): ", ['yes', 'no']).lower() == 'yes'
-        
         min_cols = 3
         if include_demographic:
             min_cols += 3
@@ -504,53 +768,47 @@ if __name__ == "__main__":
             min_cols += 3
         max_cols = min_cols + len(REALISTIC_LABELS)
         num_columns = validate_input(f"Enter number of columns (min {min_cols}, max {max_cols}): ", range(min_cols, max_cols + 1), int)
-        
         use_spatial_clustering = validate_input("Use spatial clustering to create realistic population distributions? (yes/no): ", ['yes', 'no']).lower() == 'yes'
         area_choice = validate_input("Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam\nEnter choice: ", [1, 2, 3, 4, 5], int)
-        
-        land_geometry = None
+        geojson_path = ""
         if area_choice in [1, 3, 4, 5]:
             geojson_path = validate_input(f"Enter path to GeoJSON file for {BOUNDING_BOXES[area_choice]['name']} land boundaries (e.g., geojson/id-jk.min.geojson): ", None, str, allow_empty=True)
-            if geojson_path:
-                land_geometry = load_land_geometry(geojson_path)
-                if land_geometry is None:
-                    logger.error("Failed to load land geometry. Exiting.")
-                    exit(1)
-        
         num_rows = validate_input("Enter number of rows: ", None, int)
         chunking_threshold = 100000
         use_chunking = True
         if num_rows > chunking_threshold:
             use_chunking = validate_input(f"Large dataset detected ({num_rows} rows). Use chunked file output? (yes/no, default: yes): ", ['yes', 'no', ''], str).lower() != 'no'
-        
         geometry_type = validate_input("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON\nEnter choice: ", [1, 2, 3], int)
-
     format_type = "WKT" if format_choice == 1 else "GeoJSON"
     area = BOUNDING_BOXES[area_choice]
     lon_min, lon_max = area["lon_min"], area["lon_max"]
     lat_min, lat_max = area["lat_min"], area["lat_max"]
     area_name = area["name"]
     geom_type = "POINT" if geometry_type == 1 else "POLYGON" if geometry_type == 2 else "MULTIPOLYGON"
-
     start_time = datetime.now()
-    logger.info(f"Generating {num_rows} rows of {geom_type} geometries for {area_name}...")
-    logger.info(f"Using {'spatial clustering' if use_spatial_clustering else 'uniform distribution'} for point placement")
-    logger.info(f"Generating correlated values based on {len(VARIABLE_CORRELATIONS)} defined relationships")
-
-    if area_choice in [1, 3, 4, 5] and land_geometry:
-        df = generate_parallel_dataframe(num_rows, num_columns, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-                                        land_geometry, include_demographic, include_economic, use_spatial_clustering)
-        filename_prefix = f"{area_name.lower()}_data_{num_rows}r_{num_columns}c_{geom_type.lower()}_{format_type.lower()}_land"
-    else:
-        df = generate_parallel_dataframe(num_rows, num_columns, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-                                        include_demographic=include_demographic, include_economic=include_economic, 
-                                        use_spatial_clustering=use_spatial_clustering)
-        filename_prefix = f"{area_name.lower()}_data_{num_rows}r_{num_columns}c_{geom_type.lower()}_{format_type.lower()}"
-
+    logger.info(f"Generating {num_rows:,} rows of {geom_type} geometries for {area_name}...")
+    land_geometry = None
+    if geojson_path:
+        land_geometry = gpd.read_file(geojson_path)
+        if land_geometry.empty:
+            logger.error("Failed to load land geometry. Exiting.")
+            exit(1)
+        land_geometry = unary_union(land_geometry['geometry'].values)
+    df = generate_parallel_dataframe(
+        num_rows, num_columns, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
+        land_geometry, include_demographic, include_economic, use_spatial_clustering
+    )
+    df, validation_results = validate_generated_data(
+        df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max
+    )
+    filename_prefix = f"{area_name.lower()}_data_{num_rows}r_{num_columns}c_{geom_type.lower()}_{format_type.lower()}"
+    if land_geometry is not None:
+        filename_prefix += "_land"
+    if not validation_results['passed']:
+        filename_prefix += "_needs_review"
     end_time = datetime.now()
     elapsed_time = end_time - start_time
     logger.info(f"Data generation completed in {elapsed_time.total_seconds():.2f} seconds")
-
     if use_chunking:
         save_files_chunked(df, filename_prefix)
     else:
@@ -562,11 +820,11 @@ if __name__ == "__main__":
         logger.info(f"Saved: {csv_file} ({os.path.getsize(csv_file) / 1024 / 1024:.2f} MB)")
         try:
             if num_rows <= 1000000:
-                df.to_excel(excel_file, index=False)
+                with pd.ExcelWriter(excel_file, engine='xlsxwriter') as writer:
+                    df.to_excel(writer, index=False, sheet_name='Data')
                 logger.info(f"Saved: {excel_file} ({os.path.getsize(excel_file) / 1024 / 1024:.2f} MB)")
             else:
                 logger.warning("Dataset too large for Excel (> 1M rows). Excel file not created.")
         except Exception as e:
             logger.error(f"Error saving Excel file: {e}")
-
     logger.info("Process completed successfully.")
