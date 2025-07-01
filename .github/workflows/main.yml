@@ -94,7 +94,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas geopandas shapely openpyxl tqdm numpy scipy
+          pip install pandas geopandas shapely openpyxl tqdm numpy scipy matplotlib psutil numba
 
       - name: Prepare inputs and run script
         run: |
