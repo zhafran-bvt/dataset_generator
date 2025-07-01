@@ -66,7 +66,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas geopandas shapely openpyxl tqdm numpy scipy matplotlib psutil
+          pip install pandas geopandas shapely openpyxl tqdm numpy scipy matplotlib psutil numba
 
       - name: Run unit tests
         run: |
