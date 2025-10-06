@@ -202,11 +202,21 @@ def random_sample_uniform(n, lon_min, lon_max, lat_min, lat_max):
     return get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
 
 def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, batch_size=1000):
+    # Strictly sample points inside provided polygons; never fall back to bbox.
+    # If no polygons provided, fall back to uniform bbox sampling.
+    if not polygons:
+        return get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
+
     points = []
     attempts = 0
-    max_attempts = n * 10
+    # Increase attempts generously to avoid premature fallback for coastal/fragmented shapes
+    max_attempts = max(n * 100, 5000)
     while len(points) < n and attempts < max_attempts:
-        candidates = get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, min(batch_size, n - len(points)))
+        # Sample in larger chunks to improve hit rate
+        want = n - len(points)
+        candidates = get_random_points_in_bbox(
+            lon_min, lon_max, lat_min, lat_max, min(max(batch_size, want * 5), want * 20)
+        )
         for point in candidates:
             if len(points) >= n:
                 break
@@ -215,13 +225,11 @@ def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, b
                     points.append(point)
                     break
         attempts += len(candidates)
-    if len(points) < n:
-        remaining = n - len(points)
-        points.extend(get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, remaining))
+    # Return only the valid, in-geometry points collected (may be < n in pathological cases)
     return np.array(points[:n])
 
 def generate_random_geom_batch(params):
-    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id = params
+    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id, land_geometry = params
     geoms = []
     if geom_type == "POINT":
         if format_type == "WKT":
@@ -235,28 +243,107 @@ def generate_random_geom_batch(params):
     elif geom_type in ["POLYGON", "MULTIPOLYGON"]:
         lon_extent = lon_max - lon_min
         lat_extent = lat_max - lat_min
+        existing_geoms = []
+        tree = STRtree(existing_geoms) if existing_geoms else None
+        land_polys = extract_polygon_coords(land_geometry) if land_geometry else []
         for i in range(n):
-            lon, lat = points[i]
-            width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
-            height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
-            coords = [
-                [lon, lat],
-                [lon + width, lat],
-                [lon + width, lat + height],
-                [lon, lat + height],
-                [lon, lat]
-            ]
+            max_attempts = 250
+            last_valid_coords = None
+            for attempt in range(max_attempts):
+                lon, lat = points[i]
+                logger.debug(f"Attempt {attempt} for index {i}: lon={lon:.6f}, lat={lat:.6f}")
+                # Size range with progressive reduction and minimum threshold
+                size_factor = max(0.0025, 0.025 * (1.0 / (attempt // 20 + 1))) if attempt >= 20 else random.uniform(0.005, 0.05)
+                width = lon_extent * size_factor
+                height = lat_extent * size_factor
+                # Find the containing land polygon
+                containing_poly = None
+                for poly in land_polys:
+                    if Point(lon, lat).within(Polygon(poly)):
+                        containing_poly = Polygon(poly)
+                        break
+                if not containing_poly:
+                    continue
+                # Generate initial coordinates
+                coords = [
+                    [lon - width/2, lat - height/2],
+                    [lon + width/2, lat - height/2],
+                    [lon + width/2, lat + height/2],
+                    [lon - width/2, lat + height/2],
+                    [lon - width/2, lat - height/2]
+                ]
+                initial_poly = Polygon(coords)
+                # Clip to the containing land polygon
+                clipped_geom = initial_poly.intersection(containing_poly)
+                if not clipped_geom.is_valid or clipped_geom.is_empty:
+                    adjustment_factor = min(0.1, 0.01 * (attempt // 50 + 1)) * lon_extent
+                    adjustment = random.uniform(0.001, adjustment_factor)
+                    lon += adjustment if random.choice([True, False]) else -adjustment
+                    lat += adjustment if random.choice([True, False]) else -adjustment
+                    continue
+                # Handle MultiPolygon case
+                if isinstance(clipped_geom, MultiPolygon):
+                    max_area = 0
+                    best_poly = None
+                    for poly in clipped_geom.geoms:
+                        if poly.area > max_area:
+                            max_area = poly.area
+                            best_poly = poly
+                    if best_poly:
+                        clipped_poly = best_poly
+                    else:
+                        adjustment_factor = min(0.1, 0.01 * (attempt // 50 + 1)) * lon_extent
+                        adjustment = random.uniform(0.001, adjustment_factor)
+                        lon += adjustment if random.choice([True, False]) else -adjustment
+                        lat += adjustment if random.choice([True, False]) else -adjustment
+                        continue
+                else:
+                    clipped_poly = clipped_geom
+                # Validate that all coordinates are within land
+                all_within = True
+                coords_to_check = list(clipped_poly.exterior.coords)
+                if coords_to_check[0] != coords_to_check[-1]:
+                    coords_to_check.append(coords_to_check[0])
+                for x, y in coords_to_check[:-1]:
+                    if not any(Point(x, y).within(Polygon(poly)) for poly in land_polys):
+                        all_within = False
+                        break
+                if not all_within:
+                    adjustment_factor = min(0.1, 0.01 * (attempt // 50 + 1)) * lon_extent
+                    adjustment = random.uniform(0.001, adjustment_factor)
+                    lon += adjustment if random.choice([True, False]) else -adjustment
+                    lat += adjustment if random.choice([True, False]) else -adjustment
+                    continue
+                # Check for overlap with existing geometries
+                if tree:
+                    new_multi = MultiPolygon([clipped_poly])
+                    if any(new_multi.intersects(loads(g) if format_type == "WKT" else shape(json.loads(g))) for g in geoms):
+                        adjustment_factor = min(0.1, 0.01 * (attempt // 50 + 1)) * lon_extent
+                        adjustment = random.uniform(0.001, adjustment_factor)
+                        lon += adjustment if random.choice([True, False]) else -adjustment
+                        lat += adjustment if random.choice([True, False]) else -adjustment
+                        continue
+                # Ensure closed coordinates for output
+                last_valid_coords = list(clipped_poly.exterior.coords)
+                if last_valid_coords[0] != last_valid_coords[-1]:
+                    last_valid_coords.append(last_valid_coords[0])
+                break
+            if last_valid_coords is None:
+                logger.error(f"Failed to generate non-overlapping {geom_type} at index {i} after {max_attempts} attempts (including fallback). Skipping index {i}.")
+                continue  # Skip to the next index instead of raising an exception
             if format_type == "WKT":
-                coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
+                coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in last_valid_coords])
                 if geom_type == "POLYGON":
                     geoms.append(f"POLYGON (({coord_str}))")
-                else:
+                else:  # MULTIPOLYGON
                     geoms.append(f"MULTIPOLYGON ((({coord_str})))")
             else:
                 if geom_type == "POLYGON":
-                    geoms.append(json.dumps({"type": "Polygon", "coordinates": [coords]}))
-                else:
-                    geoms.append(json.dumps({"type": "MultiPolygon", "coordinates": [[coords]]}))
+                    geoms.append(json.dumps({"type": "Polygon", "coordinates": [last_valid_coords]}))
+                else:  # MULTIPOLYGON
+                    geoms.append(json.dumps({"type": "MultiPolygon", "coordinates": [[last_valid_coords]]}))
+            existing_geoms.append(Polygon(last_valid_coords))
+            tree = STRtree(existing_geoms)
     return geoms
 
 def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geometry, cluster_count=5, points_per_cluster=200):
@@ -303,8 +390,19 @@ def generate_points_for_batch(params):
                         is_valid = True
                         break
                 if not is_valid:
-                    valid_points = random_sample_in_geometry(1, polygons, lon_min, lon_max, lat_min, lat_max)
-                    points[i] = valid_points[0]
+                    # Attempt to replace with a valid in-geometry point
+                    replaced = False
+                    for _ in range(10):
+                        valid_points = random_sample_in_geometry(1, polygons, lon_min, lon_max, lat_min, lat_max)
+                        if valid_points.shape[0] >= 1:
+                            points[i] = valid_points[0]
+                            replaced = True
+                            break
+                    if not replaced:
+                        # Try a small batch replacement to increase odds
+                        valid_points = random_sample_in_geometry(50, polygons, lon_min, lon_max, lat_min, lat_max)
+                        if valid_points.shape[0] >= 1:
+                            points[i] = valid_points[0]
     elif polygons:
         points = random_sample_in_geometry(batch_size, polygons, lon_min, lon_max, lat_min, lat_max)
     else:
@@ -314,41 +412,46 @@ def generate_points_for_batch(params):
 def generate_batch_data(batch_params):
     (start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
      polygons, labels, include_demographic, include_economic, spatial_clusters, 
-     correlation_engine, use_spatial_clustering, batch_id) = batch_params
+     correlation_engine, use_spatial_clustering, batch_id, land_geometry) = batch_params
     points = generate_points_for_batch((
         batch_size, lon_min, lon_max, lat_min, lat_max,
         use_spatial_clustering, spatial_clusters, polygons
     ))
-    geoms = generate_random_geom_batch((
-        geom_type, format_type, batch_size, lon_min, lon_max, lat_min, lat_max, 
-        points, batch_id
-    ))
+    try:
+        geoms = generate_random_geom_batch((
+            geom_type, format_type, batch_size, lon_min, lon_max, lat_min, lat_max, 
+            points, batch_id, land_geometry
+        ))
+    except RuntimeError as e:
+        logger.error(f"Geometry generation failed: {e}. Using available geometries.")
+        geoms = []  # Handle partial failure by using any generated geometries
     ids = list(range(start_id, start_id + batch_size))
     dates = generate_random_datetimes(batch_size)
     correlated_values = correlation_engine.generate_batch_values(labels, batch_size, seed=start_id)
     data = []
     for i in range(batch_size):
-        row = {"id": ids[i], "geom": geoms[i], "date_created": dates[i]}
-        if include_demographic:
-            row["Gender"] = random.choice(GENDER_OPTIONS)
-            row["Occupation"] = random.choice(OCCUPATION_OPTIONS)
-            if "Education Level" in correlated_values:
-                row["Education Level"] = correlated_values["Education Level"][i]
-            else:
-                row["Education Level"] = random.choice(EDUCATION_OPTIONS)
-        if include_economic:
-            if "Household Income" in correlated_values:
-                row["Household Income"] = correlated_values["Household Income"][i]
-            row["Employment Status"] = random.choice(EMPLOYMENT_STATUS_OPTIONS)
-            row["Access to Healthcare"] = random.choice(HEALTHCARE_ACCESS_OPTIONS)
-        for label in labels:
-            if label not in row and label not in ["id", "geom", "date_created"]:
-                if label in correlated_values:
-                    row[label] = correlated_values[label][i]
+        if i < len(geoms):  # Only include rows where geometries were successfully generated
+            row = {"id": ids[i], "geom": geoms[i], "date_created": dates[i]}
+            if include_demographic:
+                row["Gender"] = random.choice(GENDER_OPTIONS)
+                row["Occupation"] = random.choice(OCCUPATION_OPTIONS)
+                if "Education Level" in correlated_values:
+                    row["Education Level"] = correlated_values["Education Level"][i]
                 else:
-                    min_val, max_val = VALUE_RANGES.get(label, (0, 100))
-                    row[label] = round(random.uniform(min_val, max_val), 2)
-        data.append(row)
+                    row["Education Level"] = random.choice(EDUCATION_OPTIONS)
+            if include_economic:
+                if "Household Income" in correlated_values:
+                    row["Household Income"] = correlated_values["Household Income"][i]
+                row["Employment Status"] = random.choice(EMPLOYMENT_STATUS_OPTIONS)
+                row["Access to Healthcare"] = random.choice(HEALTHCARE_ACCESS_OPTIONS)
+            for label in labels:
+                if label not in row and label not in ["id", "geom", "date_created"]:
+                    if label in correlated_values:
+                        row[label] = correlated_values[label][i]
+                    else:
+                        min_val, max_val = VALUE_RANGES.get(label, (0, 100))
+                        row[label] = round(random.uniform(min_val, max_val), 2)
+            data.append(row)
     return data
 
 def save_files_chunked(df, filename_prefix, chunk_size=100000):
@@ -461,7 +564,8 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
          spatial_clusters,
          correlation_engine,
          use_spatial_clustering,
-         i)
+         i,
+         land_geometry)
         for i in range(num_batches)
     ]
     all_data = []
@@ -475,6 +579,7 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
                     progress.update(len(batch_data))
                 except Exception as e:
                     logger.error(f"Error in batch processing: {e}")
+                    # Continue with available data even if an error occurs
     logger.info(f"Converting {len(all_data):,} rows to DataFrame")
     df = pd.DataFrame(all_data, columns=labels)
     for col in df.columns:
@@ -772,7 +877,7 @@ if __name__ == "__main__":
         area_choice = validate_input("Choose area: 1 for Jakarta, 2 for Yogyakarta, 3 for Indonesia, 4 for Japan, 5 for Vietnam\nEnter choice: ", [1, 2, 3, 4, 5], int)
         geojson_path = ""
         if area_choice in [1, 3, 4, 5]:
-            geojson_path = validate_input(f"Enter path to GeoJSON file for {BOUNDING_BOXES[area_choice]['name']} land boundaries (e.g., geojson/id-jk.min.geojson): ", None, str, allow_empty=True)
+            geojson_path = validate_input(f"Enter path to GeoJSON file for {BOUNDING_BOXES[area_choice]['name']} land boundaries (e.g., geojson/jkt.geojson): ", None, str, allow_empty=True)
         num_rows = validate_input("Enter number of rows: ", None, int)
         chunking_threshold = 100000
         use_chunking = True
