@@ -1,0 +1,12 @@
+{
+  "format_choice": 1,
+  "include_demographic": "yes",
+  "include_economic": "yes",
+  "num_columns": 15,
+  "use_spatial_clustering": "no",
+  "area_choice": 2,
+  "geojson_path": "",
+  "num_rows": 100,
+  "use_chunking": "no",
+  "geometry_type": 1
+}
