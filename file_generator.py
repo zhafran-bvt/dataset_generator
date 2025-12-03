@@ -23,12 +23,82 @@ from functools import lru_cache
 from scipy import stats
 import matplotlib.pyplot as plt
 
+# H3 library import with availability check
+try:
+    import h3
+    H3_AVAILABLE = True
+except ImportError:
+    H3_AVAILABLE = False
+    h3 = None
+
 # --- CONFIGURATION ---
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 warnings.filterwarnings('ignore')
+
+# H3 configuration constants
+H3_RESOLUTION = 9  # Fixed resolution level
+
+def generate_h3_cells_batch(points, resolution=None, lon_min=None, lon_max=None, lat_min=None, lat_max=None, land_geometry=None):
+    """
+    Convert point arrays to H3 cells with optional filtering.
+    
+    Args:
+        points: NumPy array of shape (n, 2) containing [longitude, latitude] coordinates
+        resolution: H3 resolution level (ignored, always uses H3_RESOLUTION = 9)
+        lon_min, lon_max, lat_min, lat_max: Optional bounding box for filtering cell centers
+        land_geometry: Optional Shapely geometry for filtering cell centers within land boundaries
+    
+    Returns:
+        List of H3 cell identifiers as hexadecimal strings
+    """
+    # Always use fixed resolution 9
+    resolution = H3_RESOLUTION
+    if not H3_AVAILABLE:
+        logger.error("H3 library is not available. Cannot generate H3 cells.")
+        return []
+    
+    # Extract land polygons if provided
+    land_polys = []
+    if land_geometry:
+        land_polys = extract_polygon_coords(land_geometry)
+    
+    h3_cells = []
+    for i in range(len(points)):
+        lon, lat = points[i]
+        try:
+            # h3 v4 API uses latlng_to_cell (lat, lng order)
+            h3_cell = h3.latlng_to_cell(lat, lon, resolution)
+            
+            # Get cell center for filtering
+            center_lat, center_lon = h3.cell_to_latlng(h3_cell)
+            
+            # Filter by bounding box if specified
+            if lon_min is not None and lon_max is not None and lat_min is not None and lat_max is not None:
+                if center_lon < lon_min or center_lon > lon_max or center_lat < lat_min or center_lat > lat_max:
+                    logger.debug(f"Filtered H3 cell {h3_cell} with center ({center_lon:.6f}, {center_lat:.6f}) outside bounding box")
+                    continue
+            
+            # Filter by land boundaries if specified
+            if land_polys:
+                point_in_land = False
+                for poly in land_polys:
+                    if is_point_in_polygon(poly, (center_lon, center_lat)):
+                        point_in_land = True
+                        break
+                
+                if not point_in_land:
+                    logger.debug(f"Filtered H3 cell {h3_cell} with center ({center_lon:.6f}, {center_lat:.6f}) outside land boundaries")
+                    continue
+            
+            h3_cells.append(h3_cell)
+        except Exception as e:
+            logger.warning(f"Failed to convert point ({lon:.6f}, {lat:.6f}) to H3 cell: {e}")
+            continue
+    
+    return h3_cells
 
 GENDER_OPTIONS = ['Male', 'Female', 'Other']
 OCCUPATION_OPTIONS = ['Employed', 'Unemployed', 'Student', 'Retired', 'Homemaker', 'Other']
@@ -229,9 +299,18 @@ def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, b
     return np.array(points[:n])
 
 def generate_random_geom_batch(params):
-    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id, land_geometry = params
+    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id, land_geometry, h3_resolution = params
     geoms = []
-    if geom_type == "POINT":
+    if geom_type == "H3":
+        # Generate H3 cells from points with filtering (always uses resolution 9)
+        h3_cells = generate_h3_cells_batch(
+            points, 
+            lon_min=lon_min, lon_max=lon_max, 
+            lat_min=lat_min, lat_max=lat_max,
+            land_geometry=land_geometry
+        )
+        return h3_cells
+    elif geom_type == "POINT":
         if format_type == "WKT":
             for i in range(n):
                 lon, lat = points[i]
@@ -412,7 +491,7 @@ def generate_points_for_batch(params):
 def generate_batch_data(batch_params):
     (start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
      polygons, labels, include_demographic, include_economic, spatial_clusters, 
-     correlation_engine, use_spatial_clustering, batch_id, land_geometry) = batch_params
+     correlation_engine, use_spatial_clustering, batch_id, land_geometry, h3_resolution) = batch_params
     points = generate_points_for_batch((
         batch_size, lon_min, lon_max, lat_min, lat_max,
         use_spatial_clustering, spatial_clusters, polygons
@@ -420,7 +499,7 @@ def generate_batch_data(batch_params):
     try:
         geoms = generate_random_geom_batch((
             geom_type, format_type, batch_size, lon_min, lon_max, lat_min, lat_max, 
-            points, batch_id, land_geometry
+            points, batch_id, land_geometry, h3_resolution
         ))
     except RuntimeError as e:
         logger.error(f"Geometry generation failed: {e}. Using available geometries.")
@@ -428,10 +507,30 @@ def generate_batch_data(batch_params):
     ids = list(range(start_id, start_id + batch_size))
     dates = generate_random_datetimes(batch_size)
     correlated_values = correlation_engine.generate_batch_values(labels, batch_size, seed=start_id)
+    
+    # Generate building count values for all rows (INT column)
+    np.random.seed(start_id)  # Use start_id as seed for reproducibility within batch
+    building_counts = np.random.randint(1, 500, size=batch_size)
+    
     data = []
     for i in range(batch_size):
         if i < len(geoms):  # Only include rows where geometries were successfully generated
             row = {"id": ids[i], "geom": geoms[i], "date_created": dates[i]}
+            
+            # Add latitude and longitude for H3 geometry type
+            if geom_type == "H3" and H3_AVAILABLE:
+                try:
+                    lat, lon = h3.cell_to_latlng(geoms[i])
+                    row["latitude"] = lat
+                    row["longitude"] = lon
+                except Exception as e:
+                    logger.warning(f"Failed to extract coordinates from H3 cell {geoms[i]}: {e}")
+                    row["latitude"] = None
+                    row["longitude"] = None
+            
+            # Add building count (INT column)
+            row["building_count"] = int(building_counts[i])
+            
             if include_demographic:
                 row["Gender"] = random.choice(GENDER_OPTIONS)
                 row["Occupation"] = random.choice(OCCUPATION_OPTIONS)
@@ -445,7 +544,7 @@ def generate_batch_data(batch_params):
                 row["Employment Status"] = random.choice(EMPLOYMENT_STATUS_OPTIONS)
                 row["Access to Healthcare"] = random.choice(HEALTHCARE_ACCESS_OPTIONS)
             for label in labels:
-                if label not in row and label not in ["id", "geom", "date_created"]:
+                if label not in row and label not in ["id", "geom", "date_created", "latitude", "longitude", "building_count"]:
                     if label in correlated_values:
                         row[label] = correlated_values[label][i]
                     else:
@@ -509,7 +608,7 @@ def analyze_correlations(df, sample_size=10000):
 
 def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
                               land_geometry=None, include_demographic=False, include_economic=False, 
-                              use_spatial_clustering=False, cluster_count=5, points_per_cluster=200):
+                              use_spatial_clustering=False, cluster_count=5, points_per_cluster=200, h3_resolution=None):
     fixed_columns = ["id", "geom", "date_created"]
     if include_demographic:
         fixed_columns += ["Gender", "Occupation", "Education Level"]
@@ -565,7 +664,8 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
          correlation_engine,
          use_spatial_clustering,
          i,
-         land_geometry)
+         land_geometry,
+         h3_resolution)
         for i in range(num_batches)
     ]
     all_data = []
@@ -581,12 +681,29 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
                     logger.error(f"Error in batch processing: {e}")
                     # Continue with available data even if an error occurs
     logger.info(f"Converting {len(all_data):,} rows to DataFrame")
-    df = pd.DataFrame(all_data, columns=labels)
+    # Don't restrict columns - let DataFrame include all columns from the data
+    df = pd.DataFrame(all_data)
+    
+    # Reorder columns to have a logical order
+    # Start with fixed columns, then H3-specific columns if present, then the rest
+    fixed_cols = ["id", "geom"]
+    if "latitude" in df.columns and "longitude" in df.columns:
+        fixed_cols.extend(["latitude", "longitude"])
+    fixed_cols.append("date_created")
+    if "building_count" in df.columns:
+        fixed_cols.append("building_count")
+    
+    # Get remaining columns in their original order
+    remaining_cols = [col for col in df.columns if col not in fixed_cols]
+    df = df[fixed_cols + remaining_cols]
+    
     for col in df.columns:
-        if col in ["id"]:
+        if col in ["id", "building_count"]:
             df[col] = df[col].astype('int32')
         elif col in ["Household Income", "Population"]:
             df[col] = df[col].astype('float32')
+        elif col in ["latitude", "longitude"]:
+            df[col] = df[col].astype('float64')
     logger.info("Analyzing correlations in generated data...")
     analyze_correlations(df)
     return df
@@ -755,6 +872,139 @@ class DataValidator:
         plt.savefig(report_path)
         plt.close()
         logger.info(f"Statistical validation report saved to {report_path}")
+    def validate_h3_cells(self, df, h3_column='geom', resolution=None, 
+                          lon_min=None, lon_max=None, lat_min=None, lat_max=None,
+                          land_geometry=None):
+        """
+        Validate H3 cell identifiers in the dataset.
+        
+        Args:
+            df: DataFrame containing H3 cells
+            h3_column: Column name containing H3 cell identifiers
+            resolution: Expected H3 resolution (optional)
+            lon_min, lon_max, lat_min, lat_max: Bounding box coordinates (optional)
+            land_geometry: Shapely geometry for land boundaries (optional)
+        
+        Returns:
+            dict: Validation results including:
+                - passed: bool
+                - total_cells: int
+                - valid_count: int
+                - invalid_count: int
+                - resolution_mismatches: int
+                - out_of_bounds_count: int
+                - invalid_samples: list
+        """
+        if not H3_AVAILABLE:
+            logger.error("H3 library is not available. Cannot validate H3 cells.")
+            return {
+                'passed': False,
+                'total_cells': 0,
+                'valid_count': 0,
+                'invalid_count': 0,
+                'resolution_mismatches': 0,
+                'out_of_bounds_count': 0,
+                'invalid_samples': [],
+                'error': 'H3 library not available'
+            }
+        
+        validation_results = {
+            'passed': True,
+            'total_cells': len(df),
+            'valid_count': 0,
+            'invalid_count': 0,
+            'resolution_mismatches': 0,
+            'out_of_bounds_count': 0,
+            'out_of_land_count': 0,
+            'invalid_samples': []
+        }
+        
+        # Extract land polygons if provided
+        land_polys = []
+        if land_geometry:
+            land_polys = extract_polygon_coords(land_geometry)
+        
+        for i, h3_cell in enumerate(df[h3_column]):
+            try:
+                # Validate H3 cell identifier
+                if not h3.is_valid_cell(h3_cell):
+                    validation_results['invalid_count'] += 1
+                    if len(validation_results['invalid_samples']) < 10:
+                        validation_results['invalid_samples'].append({
+                            'index': i,
+                            'cell': h3_cell,
+                            'reason': 'Invalid H3 cell identifier'
+                        })
+                    continue
+                
+                validation_results['valid_count'] += 1
+                
+                # Check resolution if specified
+                if resolution is not None:
+                    actual_resolution = h3.get_resolution(h3_cell)
+                    if actual_resolution != resolution:
+                        validation_results['resolution_mismatches'] += 1
+                        if len(validation_results['invalid_samples']) < 10:
+                            validation_results['invalid_samples'].append({
+                                'index': i,
+                                'cell': h3_cell,
+                                'reason': f'Resolution mismatch: expected {resolution}, got {actual_resolution}'
+                            })
+                
+                # Check bounding box if specified
+                if lon_min is not None and lon_max is not None and lat_min is not None and lat_max is not None:
+                    lat, lon = h3.cell_to_latlng(h3_cell)
+                    if lon < lon_min or lon > lon_max or lat < lat_min or lat > lat_max:
+                        validation_results['out_of_bounds_count'] += 1
+                        if len(validation_results['invalid_samples']) < 10:
+                            validation_results['invalid_samples'].append({
+                                'index': i,
+                                'cell': h3_cell,
+                                'center': (lon, lat),
+                                'reason': f'Cell center ({lon:.6f}, {lat:.6f}) outside bounding box'
+                            })
+                
+                # Check land boundaries if provided
+                if land_polys:
+                    lat, lon = h3.cell_to_latlng(h3_cell)
+                    point_in_land = False
+                    for poly in land_polys:
+                        if is_point_in_polygon(poly, (lon, lat)):
+                            point_in_land = True
+                            break
+                    
+                    if not point_in_land:
+                        validation_results['out_of_land_count'] += 1
+                        if len(validation_results['invalid_samples']) < 10:
+                            validation_results['invalid_samples'].append({
+                                'index': i,
+                                'cell': h3_cell,
+                                'center': (lon, lat),
+                                'reason': f'Cell center ({lon:.6f}, {lat:.6f}) outside land boundaries'
+                            })
+                
+            except Exception as e:
+                validation_results['invalid_count'] += 1
+                if len(validation_results['invalid_samples']) < 10:
+                    validation_results['invalid_samples'].append({
+                        'index': i,
+                        'cell': h3_cell,
+                        'error': str(e)
+                    })
+        
+        # Calculate validity percentage
+        validity_percentage = (validation_results['valid_count'] / 
+                              validation_results['total_cells']) if validation_results['total_cells'] > 0 else 0
+        validation_results['validity_percentage'] = validity_percentage * 100
+        
+        # Determine if validation passed
+        validation_results['passed'] = (
+            validity_percentage >= self.validation_options['min_valid_geometries'] and
+            validation_results['resolution_mismatches'] == 0
+        )
+        
+        return validation_results
+    
     def _generate_geometry_report(self, df, validation_results, format_type):
         import json
         report_time = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -775,15 +1025,34 @@ class DataValidator:
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2)
         logger.info(f"Geometry validation report saved to {report_path}")
-    def validate_dataset(self, df, expected_correlations, value_ranges, geom_column='geom', format_type='WKT'):
+    def validate_dataset(self, df, expected_correlations, value_ranges, geom_column='geom', format_type='WKT', 
+                        geom_type=None, h3_resolution=None, land_geometry=None):
         sample_size = 100000
         validate_df = df if len(df) <= sample_size else df.sample(sample_size)
         logger.info(f"Starting dataset validation on {len(validate_df):,} rows")
         logger.info("Validating statistical properties...")
         stat_results = self.validate_statistical_properties(
             validate_df, expected_correlations, value_ranges)
-        logger.info("Validating geometries...")
-        geom_results = self.validate_geometries(validate_df, geom_column, format_type)
+        
+        # Detect H3 geometry type and use appropriate validation
+        is_h3 = geom_type == "H3" if geom_type else False
+        
+        if is_h3:
+            logger.info("Validating H3 cells...")
+            geom_results = self.validate_h3_cells(
+                validate_df, 
+                h3_column=geom_column,
+                resolution=h3_resolution,
+                lon_min=getattr(self, 'lon_min', None),
+                lon_max=getattr(self, 'lon_max', None),
+                lat_min=getattr(self, 'lat_min', None),
+                lat_max=getattr(self, 'lat_max', None),
+                land_geometry=land_geometry
+            )
+        else:
+            logger.info("Validating geometries...")
+            geom_results = self.validate_geometries(validate_df, geom_column, format_type)
+        
         results = {
             'passed': stat_results['passed'] and geom_results['passed'],
             'statistical_validation': stat_results,
@@ -797,11 +1066,22 @@ class DataValidator:
         logger.info(f"- Distribution issues: {len(stat_results['distribution_issues'])}")
         logger.info(f"- Range issues: {len(stat_results['range_issues'])}")
         logger.info(f"- Variables with outliers: {len(stat_results['outliers'])}")
-        logger.info(f"Geometry validation: {'PASSED' if geom_results['passed'] else 'FAILED'}")
-        logger.info(f"- Valid geometries: {geom_results['valid_count']:,} ({geom_results['validity_percentage']:.2f}%)")
-        logger.info(f"- Invalid geometries: {geom_results['invalid_count']:,}")
-        logger.info(f"- Repaired geometries: {geom_results['repaired_count']:,}")
-        logger.info(f"- Bounds issues: {len(geom_results['bounds_issues'])}")
+        
+        if is_h3:
+            logger.info(f"H3 validation: {'PASSED' if geom_results['passed'] else 'FAILED'}")
+            logger.info(f"- Valid H3 cells: {geom_results['valid_count']:,} ({geom_results['validity_percentage']:.2f}%)")
+            logger.info(f"- Invalid H3 cells: {geom_results['invalid_count']:,}")
+            logger.info(f"- Resolution mismatches: {geom_results['resolution_mismatches']:,}")
+            logger.info(f"- Out of bounds: {geom_results['out_of_bounds_count']:,}")
+            if land_geometry:
+                logger.info(f"- Out of land boundaries: {geom_results['out_of_land_count']:,}")
+        else:
+            logger.info(f"Geometry validation: {'PASSED' if geom_results['passed'] else 'FAILED'}")
+            logger.info(f"- Valid geometries: {geom_results['valid_count']:,} ({geom_results['validity_percentage']:.2f}%)")
+            logger.info(f"- Invalid geometries: {geom_results['invalid_count']:,}")
+            logger.info(f"- Repaired geometries: {geom_results['repaired_count']:,}")
+            logger.info(f"- Bounds issues: {len(geom_results['bounds_issues'])}")
+        
         logger.info("==========================")
         if self.validation_options['generate_reports']:
             report_path = os.path.join(
@@ -813,7 +1093,8 @@ class DataValidator:
             logger.info(f"Comprehensive validation report saved to {report_path}")
         return results
 
-def validate_generated_data(df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max):
+def validate_generated_data(df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
+                           h3_resolution=None, land_geometry=None):
     logger.info("Starting data validation...")
     validator = DataValidator({
         'correlation_tolerance': 0.45,
@@ -832,11 +1113,14 @@ def validate_generated_data(df, geom_type, format_type, lon_min, lon_max, lat_mi
         VARIABLE_CORRELATIONS,
         VALUE_RANGES,
         'geom',
-        'WKT' if format_type == "WKT" else 'GeoJSON'
+        'WKT' if format_type == "WKT" else 'GeoJSON',
+        geom_type=geom_type,
+        h3_resolution=h3_resolution,
+        land_geometry=land_geometry
     )
-    if results['geometry_validation']['repaired_count'] > 0:
+    if 'repaired_count' in results['geometry_validation'] and results['geometry_validation']['repaired_count'] > 0:
         logger.info(f"Repaired {results['geometry_validation']['repaired_count']} geometries")
-        return df, results
+    return df, results
     return df, results
 
 # --- MAIN ENTRYPOINT ---
@@ -862,6 +1146,16 @@ if __name__ == "__main__":
         num_rows = config['num_rows']
         use_chunking = config['use_chunking'].lower() == 'yes'
         geometry_type = config['geometry_type']
+        
+        # Handle H3 resolution from config (always uses fixed resolution 9)
+        h3_resolution = None
+        if geometry_type == 4:
+            if not H3_AVAILABLE:
+                logger.error("Error: H3 library is not installed. Please install it using:")
+                logger.error("pip install h3")
+                exit(1)
+            h3_resolution = H3_RESOLUTION
+            logger.info(f"Using H3 resolution {h3_resolution} (~0.1 km² hexagons)")
     else:
         format_choice = validate_input("Choose format: 1 for WKT, 2 for GeoJSON\nEnter choice: ", [1, 2], int)
         include_demographic = validate_input("Include demographic columns (Gender, Occupation, Education Level)? (yes/no): ", ['yes', 'no']).lower() == 'yes'
@@ -883,13 +1177,28 @@ if __name__ == "__main__":
         use_chunking = True
         if num_rows > chunking_threshold:
             use_chunking = validate_input(f"Large dataset detected ({num_rows} rows). Use chunked file output? (yes/no, default: yes): ", ['yes', 'no', ''], str).lower() != 'no'
-        geometry_type = validate_input("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON\nEnter choice: ", [1, 2, 3], int)
+        
+        # Geometry type selection with H3 support
+        if H3_AVAILABLE:
+            geometry_type = validate_input("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON, 4 for H3\nEnter choice: ", [1, 2, 3, 4], int)
+        else:
+            geometry_type = validate_input("Choose geometry type: 1 for POINT, 2 for POLYGON, 3 for MULTIPOLYGON\nEnter choice: ", [1, 2, 3], int)
+        
+        # H3 resolution is fixed at level 9
+        h3_resolution = None
+        if geometry_type == 4:
+            if not H3_AVAILABLE:
+                logger.error("Error: H3 library is not installed. Please install it using:")
+                logger.error("pip install h3")
+                exit(1)
+            h3_resolution = H3_RESOLUTION
+            logger.info(f"Using H3 resolution {h3_resolution} (~0.1 km² hexagons)")
     format_type = "WKT" if format_choice == 1 else "GeoJSON"
     area = BOUNDING_BOXES[area_choice]
     lon_min, lon_max = area["lon_min"], area["lon_max"]
     lat_min, lat_max = area["lat_min"], area["lat_max"]
     area_name = area["name"]
-    geom_type = "POINT" if geometry_type == 1 else "POLYGON" if geometry_type == 2 else "MULTIPOLYGON"
+    geom_type = "POINT" if geometry_type == 1 else "POLYGON" if geometry_type == 2 else "MULTIPOLYGON" if geometry_type == 3 else "H3"
     start_time = datetime.now()
     logger.info(f"Generating {num_rows:,} rows of {geom_type} geometries for {area_name}...")
     land_geometry = None
@@ -901,12 +1210,21 @@ if __name__ == "__main__":
         land_geometry = unary_union(land_geometry['geometry'].values)
     df = generate_parallel_dataframe(
         num_rows, num_columns, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-        land_geometry, include_demographic, include_economic, use_spatial_clustering
+        land_geometry, include_demographic, include_economic, use_spatial_clustering,
+        h3_resolution=h3_resolution if geometry_type == 4 else None
     )
     df, validation_results = validate_generated_data(
-        df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max
+        df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max,
+        h3_resolution=h3_resolution if geometry_type == 4 else None,
+        land_geometry=land_geometry
     )
-    filename_prefix = f"{area_name.lower()}_data_{num_rows}r_{num_columns}c_{geom_type.lower()}_{format_type.lower()}"
+    
+    # Generate filename with H3 support
+    if geom_type == "H3":
+        filename_prefix = f"{area_name.lower()}_data_{num_rows}r_{num_columns}c_h3_res{h3_resolution}"
+    else:
+        filename_prefix = f"{area_name.lower()}_data_{num_rows}r_{num_columns}c_{geom_type.lower()}_{format_type.lower()}"
+    
     if land_geometry is not None:
         filename_prefix += "_land"
     if not validation_results['passed']:

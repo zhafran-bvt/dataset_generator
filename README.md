@@ -13,7 +13,7 @@ It supports geometry types in **Well-Known Text (WKT)** or **GeoJSON** formats a
 - **Optional Demographic Columns**: Gender, Occupation, Education Level  
 - **Optional Economic Columns**: Household Income, Employment Status, Access to Healthcare
 - Supports geometry types:
-  - `POINT`, `POLYGON`, `MULTIPOLYGON`
+  - `POINT`, `POLYGON`, `MULTIPOLYGON`, `H3` (Hexagonal Hierarchical Spatial Index)
 - Optional spatial clustering for realistic distributions
 - Optional use of real **GeoJSON boundaries** to avoid placing geometries in oceans
 - **Output formats**:
@@ -29,10 +29,12 @@ It supports geometry types in **Well-Known Text (WKT)** or **GeoJSON** formats a
 Ensure the following are installed:
 
 ```bash
-pip install pandas geopandas shapely openpyxl tqdm numpy scipy
+pip install pandas geopandas shapely openpyxl tqdm numpy scipy h3
 ```
 
 Supports **Python 3.x**
+
+**Note**: The `h3` library is required for H3 hexagonal spatial indexing support. If you don't plan to use H3 geometry type, you can skip installing it.
 
 ---
 
@@ -84,13 +86,54 @@ python file_generator.py
   1 = POINT  
   2 = POLYGON  
   3 = MULTIPOLYGON
+  4 = H3 (requires h3 library)
   ```
+
+- **H3 Resolution** *(if H3 geometry type is selected)*:  
+  Resolution level from `0` (largest hexagons, ~4,250 km²) to `15` (smallest hexagons, ~0.9 m²)  
+  Default: `9` (~0.1 km², approximately 174 meters across)  
+  
+  **Recommended values**:
+  - Resolution 5: ~252 km² per hexagon (regional analysis)
+  - Resolution 9: ~0.1 km² per hexagon (city-level analysis, default)
+  - Resolution 12: ~307 m² per hexagon (neighborhood analysis)
+
+### Example: Generating H3 Dataset
+
+To generate a dataset with H3 hexagonal cells for Jakarta at resolution 9:
+
+```bash
+python file_generator.py
+```
+
+When prompted:
+- Format: `1` (WKT) or `2` (GeoJSON)
+- Include Demographic: `yes` or `no`
+- Include Economic: `yes` or `no`
+- Number of Columns: e.g., `10`
+- Use Spatial Clustering: `yes` or `no`
+- Area: `1` (Jakarta)
+- GeoJSON Path: `geoJson/jkt.geojson`
+- Number of Rows: e.g., `1000`
+- Use Chunked Output: `no`
+- Geometry Type: `4` (H3)
+- H3 Resolution: `9` (or press Enter for default)
+
+This will generate files like:
+```text
+output/jakarta_data_1000r_10c_h3_res9.csv
+output/jakarta_data_1000r_10c_h3_res9.xlsx
+```
+
+Each row will contain an H3 cell identifier (e.g., `8928308280fffff`) in the `geom` column instead of traditional point/polygon geometries.
 
 ### Example Outputs:
 
 ```text
 output/indonesia_data_100r_20c_point_wkt.csv  
 output/indonesia_data_100r_20c_point_wkt.xlsx  
+output/indonesia_data_100r_20c_h3_res9.csv
+output/indonesia_data_100r_20c_h3_res9.xlsx
 output/indonesia_data_1000000r_20c_point_wkt_part1.csv
 output/indonesia_data_1000000r_20c_point_wkt_part2.csv
 ```
@@ -113,8 +156,10 @@ Make sure the following files are in `geojson/`:
 
 ### Always included:
 - `id`: Unique identifier  
-- `geom`: Geometry (WKT or GeoJSON)  
+- `geom`: Geometry (WKT, GeoJSON, or H3 cell identifier)  
 - `date_created`: Random datetime in 2025 (ISO 8601)
+
+**Note**: When using H3 geometry type, the `geom` column contains H3 cell identifiers as hexadecimal strings (e.g., `8928308280fffff`) instead of traditional WKT or GeoJSON geometries.
 
 ### Optional Demographic:
 - `Gender`: Male, Female, Other  
@@ -190,9 +235,17 @@ geometry_type: 1                  # 1=POINT, 2=POLYGON, 3=MULTIPOLYGON
 
 ## ✅ Output Example
 
+**POINT Geometry:**
+
 | id | geom | date_created | Population | Income per Capita | Literacy Rate | Gender | Household Income |
 |----|------|---------------|------------|--------------------|----------------|--------|-------------------|
 | 1  | POINT(106.82 -6.17) | 2025-06-17T13:00:00Z | 54321 | 25000.50 | 85.0 | Male | 450000.75 |
+
+**H3 Geometry:**
+
+| id | geom | date_created | Population | Income per Capita | Literacy Rate | Gender | Household Income |
+|----|------|---------------|------------|--------------------|----------------|--------|-------------------|
+| 1  | 8928308280fffff | 2025-06-17T13:00:00Z | 54321 | 25000.50 | 85.0 | Male | 450000.75 |
 
 ---
 

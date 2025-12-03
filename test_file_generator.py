@@ -1,6 +1,7 @@
 import unittest
 import os
 import sys
+import random
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -11,6 +12,7 @@ import json
 from datetime import datetime
 import matplotlib.pyplot as plt
 import psutil
+from hypothesis import given, settings, strategies as st
 
 # Import the generator module
 import file_generator as fg
@@ -238,42 +240,54 @@ class TestFileGenerator(unittest.TestCase):
         lat_min, lat_max = 0, 1
         points = fg.get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
         batch_id = 0
+        land_geometry = None
+        h3_resolution = None
         
         # Test POINT WKT
-        params = ("POINT", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("POINT", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, land_geometry, h3_resolution)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(g.startswith("POINT (") for g in geoms))
         
         # Test POINT GeoJSON
-        params = ("POINT", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("POINT", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, land_geometry, h3_resolution)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(json.loads(g)["type"] == "Point" for g in geoms))
         
-        # Test POLYGON WKT
-        params = ("POLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        # Test POLYGON WKT (with land_geometry for proper polygon generation)
+        params = ("POLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, self.test_polygon, h3_resolution)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(g.startswith("POLYGON ((") for g in geoms))
         
-        # Test POLYGON GeoJSON
-        params = ("POLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        # Test POLYGON GeoJSON (with land_geometry for proper polygon generation)
+        params = ("POLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, self.test_polygon, h3_resolution)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(json.loads(g)["type"] == "Polygon" for g in geoms))
         
-        # Test MULTIPOLYGON WKT
-        params = ("MULTIPOLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        # Test MULTIPOLYGON WKT (with land_geometry for proper polygon generation)
+        params = ("MULTIPOLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, self.test_polygon, h3_resolution)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(g.startswith("MULTIPOLYGON (((") for g in geoms))
         
-        # Test MULTIPOLYGON GeoJSON
-        params = ("MULTIPOLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        # Test MULTIPOLYGON GeoJSON (with land_geometry for proper polygon generation)
+        params = ("MULTIPOLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, self.test_polygon, h3_resolution)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(json.loads(g)["type"] == "MultiPolygon" for g in geoms))
+        
+        # Test H3 generation
+        if fg.H3_AVAILABLE:
+            h3_resolution = 9
+            params = ("H3", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, land_geometry, h3_resolution)
+            geoms = fg.generate_random_geom_batch(params)
+            self.assertEqual(len(geoms), n)
+            # Verify all are valid H3 cells
+            for cell in geoms:
+                self.assertTrue(fg.h3.is_valid_cell(cell))
 
     def test_create_spatial_clustering_model(self):
         lon_min, lon_max = 100, 101
@@ -354,11 +368,12 @@ class TestFileGenerator(unittest.TestCase):
         use_spatial_clustering = False
         correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
         batch_id = 0
+        h3_resolution = None
         
         batch_params = (
             start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max,
             polygons, labels, include_demographic, include_economic, spatial_clusters,
-            correlation_engine, use_spatial_clustering, batch_id
+            correlation_engine, use_spatial_clustering, batch_id, self.test_polygon, h3_resolution
         )
         
         data = fg.generate_batch_data(batch_params)
@@ -704,3 +719,759 @@ class TestFileGenerator(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# --- PROPERTY-BASED TESTS ---
+
+class TestH3PropertyTests(unittest.TestCase):
+    """Property-based tests for H3 functionality"""
+    
+    @settings(max_examples=100)
+    @given(st.integers())
+    def test_h3_library_availability_check(self, random_value):
+        """
+        Feature: h3-format-support, Property 1: H3 library availability check
+        Validates: Requirements 6.1, 6.3, 6.4
+        
+        Property: For any execution context, the H3_AVAILABLE flag should correctly
+        reflect whether the h3 library is importable, and when H3_AVAILABLE is True,
+        the h3 module should be usable.
+        """
+        # Test that H3_AVAILABLE is a boolean
+        self.assertIsInstance(fg.H3_AVAILABLE, bool)
+        
+        # Test that when H3_AVAILABLE is True, h3 module is not None
+        if fg.H3_AVAILABLE:
+            self.assertIsNotNone(fg.h3)
+            # Test that h3 module has expected functions (h3 v4 API)
+            self.assertTrue(hasattr(fg.h3, 'latlng_to_cell'))
+            self.assertTrue(hasattr(fg.h3, 'is_valid_cell'))
+            self.assertTrue(hasattr(fg.h3, 'get_resolution'))
+            self.assertTrue(hasattr(fg.h3, 'cell_to_latlng'))
+        else:
+            # When H3_AVAILABLE is False, h3 should be None
+            self.assertIsNone(fg.h3)
+        
+        # Test that H3 configuration constant is defined
+        self.assertEqual(fg.H3_RESOLUTION, 9)
+    
+    @settings(max_examples=100)
+    @given(
+        st.integers(min_value=1, max_value=100),  # number of points
+        st.floats(min_value=-180, max_value=180), # lon_min
+        st.floats(min_value=-90, max_value=90)    # lat_min
+    )
+    def test_valid_h3_cell_generation(self, num_points, lon_min, lat_min):
+        """
+        Feature: h3-format-support, Property 1: All generated H3 cells are valid
+        Validates: Requirements 1.1, 4.1, 4.2, 5.1
+        
+        Property: For any dataset generated with H3 geometry type, all H3 cell identifiers
+        in the geom column should be valid H3 cells as verified by h3.is_valid_cell()
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate valid bounding box
+        lon_max = min(lon_min + abs(np.random.uniform(0.1, 10)), 180)
+        lat_max = min(lat_min + abs(np.random.uniform(0.1, 10)), 90)
+        
+        # Ensure valid bounds
+        if lon_min >= lon_max or lat_min >= lat_max:
+            return
+        
+        # Generate random points within the bounding box
+        points = fg.get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, num_points)
+        
+        # Generate H3 cells (always uses resolution 9)
+        h3_cells = fg.generate_h3_cells_batch(points)
+        
+        # Property: All generated H3 cells should be valid
+        for cell in h3_cells:
+            self.assertTrue(fg.h3.is_valid_cell(cell), 
+                          f"Generated H3 cell {cell} is not valid")
+    
+    @settings(max_examples=100)
+    @given(
+        st.floats(min_value=-180, max_value=180), # longitude
+        st.floats(min_value=-90, max_value=90)    # latitude
+    )
+    def test_point_to_h3_round_trip(self, lon, lat):
+        """
+        Feature: h3-format-support, Property 6: Point-to-H3 conversion preserves location
+        Validates: Requirements 3.2
+        
+        Property: For any geographic point (lon, lat), converting it to an H3 cell and then
+        converting that H3 cell back to coordinates should yield a point that is within the
+        same H3 hexagon (both points should map to the same H3 cell)
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Create a single point array
+        points = np.array([[lon, lat]])
+        
+        # Convert to H3 cell (always uses resolution 9)
+        h3_cells = fg.generate_h3_cells_batch(points)
+        
+        # Skip if conversion failed
+        if len(h3_cells) == 0:
+            return
+        
+        h3_cell = h3_cells[0]
+        
+        # Convert H3 cell back to coordinates
+        lat_back, lon_back = fg.h3.cell_to_latlng(h3_cell)
+        
+        # Convert the round-trip coordinates back to H3 cell (resolution 9)
+        h3_cell_back = fg.h3.latlng_to_cell(lat_back, lon_back, 9)
+        
+        # Property: The original H3 cell and the round-trip H3 cell should be the same
+        # This ensures that the conversion preserves location within the same hexagon
+        self.assertEqual(h3_cell, h3_cell_back,
+                        f"Round-trip H3 cell {h3_cell_back} differs from original {h3_cell} "
+                        f"for point ({lon}, {lat}) at resolution 9")
+    
+    @settings(max_examples=100)
+    @given(
+        st.integers(min_value=1, max_value=50),   # number of points
+        st.floats(min_value=-180, max_value=180), # lon_min
+        st.floats(min_value=-90, max_value=90)    # lat_min
+    )
+    def test_h3_resolution_matching(self, num_points, lon_min, lat_min):
+        """
+        Feature: h3-format-support, Property 2: All H3 cells match resolution 9
+        Validates: Requirements 1.2, 1.3, 1.4, 5.2, 7.2
+        
+        Property: For any dataset generated with H3 geometry type, all H3 cell identifiers
+        should have resolution 9 as verified by h3.get_resolution()
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate valid bounding box
+        lon_max = min(lon_min + abs(np.random.uniform(0.1, 10)), 180)
+        lat_max = min(lat_min + abs(np.random.uniform(0.1, 10)), 90)
+        
+        # Ensure valid bounds
+        if lon_min >= lon_max or lat_min >= lat_max:
+            return
+        
+        # Generate random points within the bounding box
+        points = fg.get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, num_points)
+        
+        # Generate H3 cells (always uses resolution 9)
+        h3_cells = fg.generate_h3_cells_batch(points)
+        
+        # Property: All generated H3 cells should have resolution 9
+        for cell in h3_cells:
+            actual_resolution = fg.h3.get_resolution(cell)
+            self.assertEqual(actual_resolution, 9,
+                           f"H3 cell {cell} has resolution {actual_resolution}, expected 9")
+    
+    @settings(max_examples=100)
+    @given(
+        st.floats(min_value=-180, max_value=180), # lon_min
+        st.floats(min_value=-90, max_value=90)    # lat_min
+    )
+    def test_h3_always_uses_resolution_9(self, lon_min, lat_min):
+        """
+        Feature: h3-format-support, Property 7: H3 always uses resolution 9
+        Validates: Requirements 2.3, 2.4, 2.5
+        
+        Property: For any H3 dataset generation request, the Dataset Generator should always
+        use resolution 9 regardless of any input or configuration
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate valid bounding box
+        lon_max = min(lon_min + abs(np.random.uniform(0.1, 10)), 180)
+        lat_max = min(lat_min + abs(np.random.uniform(0.1, 10)), 90)
+        
+        # Ensure valid bounds
+        if lon_min >= lon_max or lat_min >= lat_max:
+            return
+        
+        # Generate a small number of random points
+        num_points = 10
+        points = fg.get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, num_points)
+        
+        # Property: H3 cell generation should always use resolution 9
+        try:
+            h3_cells = fg.generate_h3_cells_batch(points)
+            
+            # Verify that cells were generated
+            self.assertGreater(len(h3_cells), 0,
+                             "No H3 cells generated")
+            
+            # Verify all cells are valid and have resolution 9
+            for cell in h3_cells:
+                self.assertTrue(fg.h3.is_valid_cell(cell),
+                              f"Invalid H3 cell {cell} generated")
+                
+                # Verify the resolution is always 9
+                actual_resolution = fg.h3.get_resolution(cell)
+                self.assertEqual(actual_resolution, 9,
+                               f"H3 cell has resolution {actual_resolution}, expected 9")
+        except Exception as e:
+            self.fail(f"H3 generation failed: {e}")
+    
+
+    
+    @settings(max_examples=100)
+    @given(
+        st.integers(min_value=10, max_value=100),  # number of H3 cells
+        st.floats(min_value=-180, max_value=170),  # lon_min
+        st.floats(min_value=-90, max_value=80)     # lat_min
+    )
+    def test_h3_cell_centers_fall_within_bounding_box(self, num_cells, lon_min, lat_min):
+        """
+        Feature: h3-format-support, Property 4: H3 cell centers fall within bounding box
+        Validates: Requirements 1.5, 5.3
+        
+        Property: For any dataset generated with H3 geometry type, all H3 cell center coordinates
+        (obtained via h3.cell_to_latlng()) should fall within the specified bounding box
+        (lon_min, lon_max, lat_min, lat_max)
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate valid bounding box
+        lon_max = min(lon_min + abs(np.random.uniform(1, 10)), 180)
+        lat_max = min(lat_min + abs(np.random.uniform(1, 10)), 90)
+        
+        # Ensure valid bounds
+        if lon_min >= lon_max or lat_min >= lat_max:
+            return
+        
+        # Generate random points within the bounding box
+        points = fg.get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, num_cells)
+        
+        # Generate H3 cells from these points with bounding box filtering (always uses resolution 9)
+        h3_cells = fg.generate_h3_cells_batch(
+            points,
+            lon_min=lon_min, lon_max=lon_max,
+            lat_min=lat_min, lat_max=lat_max
+        )
+        
+        # Skip if no cells were generated (filtering may remove all cells)
+        if len(h3_cells) == 0:
+            return
+        
+        # Create a DataFrame with H3 cells
+        df = pd.DataFrame({'geom': h3_cells})
+        
+        # Create validator and validate H3 cells with bounding box
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.15,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        results = validator.validate_h3_cells(
+            df,
+            h3_column='geom',
+            resolution=9,
+            lon_min=lon_min,
+            lon_max=lon_max,
+            lat_min=lat_min,
+            lat_max=lat_max
+        )
+        
+        # Property: All H3 cell centers should fall within the bounding box
+        # Since we filter during generation, all cell centers should be within bounds
+        self.assertEqual(results['out_of_bounds_count'], 0,
+                        f"Found {results['out_of_bounds_count']} H3 cells with centers outside bounding box "
+                        f"[{lon_min}, {lon_max}] x [{lat_min}, {lat_max}]. "
+                        f"Invalid samples: {results['invalid_samples']}")
+        
+        # Verify all cells are valid
+        self.assertGreater(results['valid_count'], 0,
+                          "No valid H3 cells were generated")
+    
+    @settings(max_examples=100)
+    @given(
+        st.integers(min_value=10, max_value=50)   # number of H3 cells
+    )
+    def test_h3_cell_centers_respect_land_boundaries(self, num_cells):
+        """
+        Feature: h3-format-support, Property 5: H3 cell centers respect land boundaries
+        Validates: Requirements 3.3, 3.6, 5.4
+        
+        Property: For any dataset generated with H3 geometry type when land geometry boundaries
+        are provided, all H3 cell center coordinates should fall within the land boundaries
+        from the GeoJSON file
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Create a test polygon for land boundaries
+        test_polygon = Polygon([
+            (100.0, 0.0), (101.0, 0.0), (101.0, 1.0), (100.0, 1.0), (100.0, 0.0)
+        ])
+        
+        lon_min, lon_max = 100.0, 101.0
+        lat_min, lat_max = 0.0, 1.0
+        
+        # Extract polygon coordinates for point-in-polygon testing
+        polygons = fg.extract_polygon_coords(test_polygon)
+        
+        # Generate points within the land geometry
+        points = fg.random_sample_in_geometry(num_cells, polygons, lon_min, lon_max, lat_min, lat_max)
+        
+        # Skip if not enough points were generated
+        if len(points) < num_cells // 2:
+            return
+        
+        # Generate H3 cells from these points with land boundary filtering (always uses resolution 9)
+        h3_cells = fg.generate_h3_cells_batch(
+            points,
+            lon_min=lon_min, lon_max=lon_max,
+            lat_min=lat_min, lat_max=lat_max,
+            land_geometry=test_polygon
+        )
+        
+        # Skip if no cells were generated (filtering may remove all cells)
+        if len(h3_cells) == 0:
+            return
+        
+        # Create a DataFrame with H3 cells
+        df = pd.DataFrame({'geom': h3_cells})
+        
+        # Create validator and validate H3 cells with land boundaries
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.15,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        results = validator.validate_h3_cells(
+            df,
+            h3_column='geom',
+            resolution=9,
+            lon_min=lon_min,
+            lon_max=lon_max,
+            lat_min=lat_min,
+            lat_max=lat_max,
+            land_geometry=test_polygon
+        )
+        
+        # Property: All H3 cell centers should fall within the land boundaries
+        # Since we filter during generation, all cell centers should be within land boundaries
+        self.assertEqual(results['out_of_land_count'], 0,
+                       f"Found {results['out_of_land_count']} H3 cells "
+                       f"with centers outside land boundaries. "
+                       f"Invalid samples: {results['invalid_samples']}")
+        
+        # Verify all cells are valid
+        self.assertGreater(results['valid_count'], 0,
+                          "No valid H3 cells were generated")
+
+
+    @settings(max_examples=100, deadline=None)
+    @given(
+        st.integers(min_value=10, max_value=30),   # number of rows (reduced for performance)
+        st.integers(min_value=5, max_value=10),    # number of columns (reduced for performance)
+        st.booleans(),                              # include_demographic
+        st.booleans(),                              # include_economic
+        st.integers(min_value=0, max_value=1000000)  # random seed for reproducibility
+    )
+    def test_h3_datasets_maintain_all_standard_columns(self, num_rows, num_cols, include_demographic, include_economic, seed):
+        """
+        Feature: h3-format-support, Property 8: H3 datasets maintain all standard columns
+        Validates: Requirements 4.5, 7.5
+        
+        Property: For any dataset generated with H3 geometry type, the dataset should contain
+        all the same columns (demographic, economic, statistical) as datasets generated with
+        other geometry types, with only the geom column content differing
+        """
+        # Skip test if H3 is not available
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Define test parameters
+        lon_min, lon_max = 100.0, 101.0
+        lat_min, lat_max = 0.0, 1.0
+        h3_resolution = 9
+        
+        # Set random seed for reproducible column selection
+        random.seed(seed)
+        np.random.seed(seed)
+        
+        # Generate H3 dataset
+        df_h3 = fg.generate_parallel_dataframe(
+            rows=num_rows,
+            cols=num_cols,
+            geom_type="H3",
+            format_type="WKT",  # Not used for H3
+            lon_min=lon_min,
+            lon_max=lon_max,
+            lat_min=lat_min,
+            lat_max=lat_max,
+            land_geometry=None,
+            include_demographic=include_demographic,
+            include_economic=include_economic,
+            use_spatial_clustering=False,
+            h3_resolution=h3_resolution
+        )
+        
+        # Reset random seed to get same column selection
+        random.seed(seed)
+        np.random.seed(seed)
+        
+        # Generate POINT dataset with same parameters
+        df_point = fg.generate_parallel_dataframe(
+            rows=num_rows,
+            cols=num_cols,
+            geom_type="POINT",
+            format_type="WKT",
+            lon_min=lon_min,
+            lon_max=lon_max,
+            lat_min=lat_min,
+            lat_max=lat_max,
+            land_geometry=None,
+            include_demographic=include_demographic,
+            include_economic=include_economic,
+            use_spatial_clustering=False,
+            h3_resolution=None
+        )
+        
+        # Property: Both datasets should have the same columns except H3 has latitude/longitude
+        h3_columns = set(df_h3.columns)
+        point_columns = set(df_point.columns)
+        
+        # H3 datasets have latitude and longitude columns that POINT datasets don't have
+        expected_extra_h3_columns = {'latitude', 'longitude'}
+        actual_extra_h3_columns = h3_columns - point_columns
+        
+        self.assertEqual(actual_extra_h3_columns, expected_extra_h3_columns,
+                        f"H3 dataset should have exactly latitude and longitude as extra columns. "
+                        f"Expected extra: {expected_extra_h3_columns}, Actual extra: {actual_extra_h3_columns}")
+        
+        # All POINT columns should be in H3 dataset
+        missing_in_h3 = point_columns - h3_columns
+        self.assertEqual(missing_in_h3, set(),
+                        f"H3 dataset is missing columns that POINT dataset has: {missing_in_h3}")
+        
+        # Property: H3 datasets may have fewer rows due to filtering, but should have at least some rows
+        # This is expected behavior because H3 cell centers are checked against bounding box
+        self.assertGreater(len(df_h3), 0, "H3 dataset should have at least one row")
+        self.assertGreater(len(df_point), 0, "POINT dataset should have at least one row")
+        # H3 may have fewer rows due to filtering, but should be close to the requested number
+        self.assertLessEqual(len(df_h3), num_rows, f"H3 dataset should not exceed requested rows")
+        self.assertLessEqual(len(df_point), num_rows, f"POINT dataset should not exceed requested rows")
+        
+        # Property: The 'geom' column should exist in both datasets
+        self.assertIn('geom', df_h3.columns, "H3 dataset missing 'geom' column")
+        self.assertIn('geom', df_point.columns, "POINT dataset missing 'geom' column")
+        
+        # Property: The 'geom' column content should differ (H3 cells vs WKT points)
+        # H3 cells should be valid H3 identifiers
+        for h3_cell in df_h3['geom'].head(min(5, len(df_h3))):  # Check first 5 or fewer
+            self.assertTrue(fg.h3.is_valid_cell(h3_cell),
+                          f"H3 dataset geom column contains invalid H3 cell: {h3_cell}")
+        
+        # POINT geometries should start with "POINT ("
+        for point_geom in df_point['geom'].head(min(5, len(df_point))):  # Check first 5 or fewer
+            self.assertTrue(point_geom.startswith("POINT ("),
+                          f"POINT dataset geom column contains invalid WKT: {point_geom}")
+        
+        # Property: All other columns (non-geom, non-lat/lon) should have the same data types
+        common_columns = h3_columns & point_columns
+        for col in common_columns:
+            if col != 'geom':
+                # Handle case where duplicate column names might exist (returns DataFrame instead of Series)
+                h3_col = df_h3[col]
+                point_col = df_point[col]
+                
+                # If we get a DataFrame (duplicate columns), compare the first column's dtype
+                h3_dtype = h3_col.iloc[:, 0].dtype if isinstance(h3_col, pd.DataFrame) else h3_col.dtype
+                point_dtype = point_col.iloc[:, 0].dtype if isinstance(point_col, pd.DataFrame) else point_col.dtype
+                
+                self.assertEqual(h3_dtype, point_dtype,
+                               f"Column '{col}' has different dtype: H3={h3_dtype}, POINT={point_dtype}")
+        
+        # Property: Standard columns should always be present
+        standard_columns = ['id', 'geom', 'date_created']
+        for col in standard_columns:
+            self.assertIn(col, df_h3.columns, f"H3 dataset missing standard column '{col}'")
+            self.assertIn(col, df_point.columns, f"POINT dataset missing standard column '{col}'")
+        
+        # Property: Demographic columns should be present if include_demographic is True
+        if include_demographic:
+            demographic_columns = ['Gender', 'Occupation', 'Education Level']
+            for col in demographic_columns:
+                self.assertIn(col, df_h3.columns, f"H3 dataset missing demographic column '{col}'")
+                self.assertIn(col, df_point.columns, f"POINT dataset missing demographic column '{col}'")
+        
+        # Property: Economic columns should be present if include_economic is True
+        if include_economic:
+            economic_columns = ['Household Income', 'Employment Status', 'Access to Healthcare']
+            for col in economic_columns:
+                self.assertIn(col, df_h3.columns, f"H3 dataset missing economic column '{col}'")
+                self.assertIn(col, df_point.columns, f"POINT dataset missing economic column '{col}'")
+                self.assertIn(col, df_point.columns, f"POINT dataset missing economic column '{col}'")
+
+
+class TestH3Validation(unittest.TestCase):
+    """Unit tests for H3 validation functionality"""
+    
+    def test_validate_h3_cells_basic(self):
+        """Test basic H3 cell validation"""
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate some valid H3 cells
+        points = np.array([[100.5, 0.5], [100.6, 0.6], [100.7, 0.7]])
+        h3_cells = fg.generate_h3_cells_batch(points, resolution=9)
+        
+        df = pd.DataFrame({'geom': h3_cells})
+        
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.15,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        results = validator.validate_h3_cells(df, h3_column='geom', resolution=9)
+        
+        # All cells should be valid
+        self.assertEqual(results['valid_count'], 3)
+        self.assertEqual(results['invalid_count'], 0)
+        self.assertEqual(results['resolution_mismatches'], 0)
+        self.assertTrue(results['passed'])
+    
+    def test_validate_h3_cells_with_invalid_cells(self):
+        """Test H3 validation with invalid cell identifiers"""
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Mix valid and invalid cells
+        valid_cell = fg.h3.latlng_to_cell(0.5, 100.5, 9)
+        df = pd.DataFrame({'geom': [valid_cell, 'invalid_cell', 'another_invalid']})
+        
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.15,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        results = validator.validate_h3_cells(df, h3_column='geom')
+        
+        # Should have 1 valid and 2 invalid
+        self.assertEqual(results['valid_count'], 1)
+        self.assertEqual(results['invalid_count'], 2)
+        self.assertFalse(results['passed'])  # Less than 99% valid
+    
+    def test_validate_h3_cells_resolution_mismatch(self):
+        """Test H3 validation detects resolution mismatches"""
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate cells at different resolutions
+        cell_res9 = fg.h3.latlng_to_cell(0.5, 100.5, 9)
+        cell_res10 = fg.h3.latlng_to_cell(0.5, 100.5, 10)
+        
+        df = pd.DataFrame({'geom': [cell_res9, cell_res10]})
+        
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.15,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        # Validate expecting resolution 9
+        results = validator.validate_h3_cells(df, h3_column='geom', resolution=9)
+        
+        # Should detect 1 resolution mismatch
+        self.assertEqual(results['resolution_mismatches'], 1)
+        self.assertFalse(results['passed'])  # Resolution mismatches cause failure
+    
+    def test_validate_h3_cells_without_h3_library(self):
+        """Test H3 validation when H3 library is not available"""
+        # Temporarily disable H3
+        original_h3_available = fg.H3_AVAILABLE
+        fg.H3_AVAILABLE = False
+        
+        try:
+            df = pd.DataFrame({'geom': ['some_cell']})
+            
+            validator = fg.DataValidator({
+                'correlation_tolerance': 0.15,
+                'outlier_threshold': 3,
+                'min_valid_geometries': 0.99,
+                'repair_geometries': True,
+                'generate_reports': False
+            })
+            
+            results = validator.validate_h3_cells(df, h3_column='geom')
+            
+            # Should return error result
+            self.assertFalse(results['passed'])
+            self.assertIn('error', results)
+            self.assertEqual(results['error'], 'H3 library not available')
+        finally:
+            # Restore H3 availability
+            fg.H3_AVAILABLE = original_h3_available
+    
+    def test_validate_dataset_with_h3_geometry(self):
+        """Test validate_dataset integration with H3 geometry type"""
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        # Generate valid H3 cells
+        points = np.array([[100.5, 0.5], [100.6, 0.6], [100.7, 0.7]])
+        h3_cells = fg.generate_h3_cells_batch(points, resolution=9)
+        
+        # Create a DataFrame with H3 cells and some statistical data
+        df = pd.DataFrame({
+            'id': range(len(h3_cells)),
+            'geom': h3_cells,
+            'Income per Capita': [10000, 20000, 30000],
+            'Poverty Rate': [40, 30, 20]
+        })
+        
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.45,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        # Set bounding box for validation
+        validator.lon_min = 100.0
+        validator.lon_max = 101.0
+        validator.lat_min = 0.0
+        validator.lat_max = 1.0
+        
+        with patch('file_generator.logger.info'):
+            results = validator.validate_dataset(
+                df,
+                fg.VARIABLE_CORRELATIONS,
+                fg.VALUE_RANGES,
+                geom_column='geom',
+                format_type='WKT',
+                geom_type='H3',
+                h3_resolution=9,
+                land_geometry=None
+            )
+        
+        # Verify the results structure
+        self.assertIn('passed', results)
+        self.assertIn('statistical_validation', results)
+        self.assertIn('geometry_validation', results)
+        
+        # Verify H3-specific validation was used
+        geom_validation = results['geometry_validation']
+        self.assertIn('valid_count', geom_validation)
+        self.assertIn('invalid_count', geom_validation)
+        self.assertIn('resolution_mismatches', geom_validation)
+        self.assertIn('out_of_bounds_count', geom_validation)
+        self.assertIn('validity_percentage', geom_validation)
+        
+        # All H3 cells should be valid
+        self.assertEqual(geom_validation['valid_count'], len(h3_cells))
+        self.assertEqual(geom_validation['invalid_count'], 0)
+        self.assertEqual(geom_validation['resolution_mismatches'], 0)
+        self.assertTrue(geom_validation['passed'])
+    
+    def test_validate_dataset_detects_h3_vs_regular_geometry(self):
+        """Test that validate_dataset correctly routes to H3 or regular geometry validation"""
+        if not fg.H3_AVAILABLE:
+            self.skipTest("H3 library is not available")
+        
+        validator = fg.DataValidator({
+            'correlation_tolerance': 0.45,
+            'outlier_threshold': 3,
+            'min_valid_geometries': 0.99,
+            'repair_geometries': True,
+            'generate_reports': False
+        })
+        
+        # Test with H3 geometry type
+        h3_cells = fg.generate_h3_cells_batch(np.array([[100.5, 0.5]]), resolution=9)
+        df_h3 = pd.DataFrame({
+            'id': [1],
+            'geom': h3_cells,
+            'Income per Capita': [10000],
+            'Poverty Rate': [40]
+        })
+        
+        with patch('file_generator.logger.info'), \
+             patch.object(validator, 'validate_h3_cells') as mock_h3, \
+             patch.object(validator, 'validate_geometries') as mock_geom:
+            
+            mock_h3.return_value = {
+                'passed': True,
+                'valid_count': 1,
+                'invalid_count': 0,
+                'resolution_mismatches': 0,
+                'out_of_bounds_count': 0,
+                'out_of_land_count': 0,
+                'validity_percentage': 100.0
+            }
+            
+            validator.validate_dataset(
+                df_h3,
+                fg.VARIABLE_CORRELATIONS,
+                fg.VALUE_RANGES,
+                geom_type='H3',
+                h3_resolution=9
+            )
+            
+            # Should call validate_h3_cells, not validate_geometries
+            mock_h3.assert_called_once()
+            mock_geom.assert_not_called()
+        
+        # Test with regular POINT geometry type
+        df_point = pd.DataFrame({
+            'id': [1],
+            'geom': ['POINT (100.5 0.5)'],
+            'Income per Capita': [10000],
+            'Poverty Rate': [40]
+        })
+        
+        with patch('file_generator.logger.info'), \
+             patch.object(validator, 'validate_h3_cells') as mock_h3, \
+             patch.object(validator, 'validate_geometries') as mock_geom:
+            
+            mock_geom.return_value = {
+                'passed': True,
+                'total_geometries': 1,
+                'valid_count': 1,
+                'invalid_count': 0,
+                'repaired_count': 0,
+                'bounds_issues': [],
+                'invalid_samples': [],
+                'validity_percentage': 100.0
+            }
+            
+            validator.validate_dataset(
+                df_point,
+                fg.VARIABLE_CORRELATIONS,
+                fg.VALUE_RANGES,
+                geom_type='POINT',
+                format_type='WKT'
+            )
+            
+            # Should call validate_geometries, not validate_h3_cells
+            mock_geom.assert_called_once()
+            mock_h3.assert_not_called()

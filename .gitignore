@@ -1,3 +1,11 @@
 *.csv
 *.xlsx
 *.pyc
+
+# Hypothesis testing cache
+.hypothesis/
+
+# Markdown files except README
+*.md
+!README.md
+!**/README.md
