@@ -407,6 +407,46 @@ class TestFileGenerator(unittest.TestCase):
             self.assertIn(row["Employment Status"], fg.EMPLOYMENT_STATUS_OPTIONS)
             self.assertIn(row["Access to Healthcare"], fg.HEALTHCARE_ACCESS_OPTIONS)
 
+    def test_no_duplicate_column_names(self):
+        """Test that no duplicate column names are generated when demographic data includes Education Level"""
+        rows = 50
+        cols = 15  # Request enough columns to potentially trigger the duplicate
+        geom_type = "POINT"
+        format_type = "WKT"
+        lon_min, lon_max = 100, 101
+        lat_min, lat_max = 0, 1
+        
+        # Test multiple times with different random seeds to increase chance of hitting the duplicate scenario
+        for seed in range(10):
+            random.seed(seed)
+            np.random.seed(seed)
+            
+            df = fg.generate_parallel_dataframe(
+                rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max,
+                land_geometry=None, include_demographic=True, include_economic=True
+            )
+            
+            # Check for duplicate column names
+            column_names = list(df.columns)
+            unique_column_names = list(set(column_names))
+            
+            self.assertEqual(len(column_names), len(unique_column_names), 
+                           f"Duplicate column names found with seed {seed}: {column_names}")
+            
+            # Specifically check that Education Level appears only once
+            education_level_count = column_names.count("Education Level")
+            self.assertEqual(education_level_count, 1, 
+                           f"Education Level appears {education_level_count} times in columns: {column_names}")
+            
+            # Verify Education Level contains categorical data (not numeric)
+            if "Education Level" in df.columns:
+                education_values = df["Education Level"].unique()
+                for value in education_values:
+                    self.assertIn(value, fg.EDUCATION_OPTIONS, 
+                                f"Invalid Education Level value: {value}")
+                    self.assertIsInstance(value, str, 
+                                        f"Education Level should be string, got {type(value)}: {value}")
+
     def test_save_files_chunked_small_dataset(self):
         df = pd.DataFrame({"id": range(50), "value": range(50)})
         prefix = "test_small"
