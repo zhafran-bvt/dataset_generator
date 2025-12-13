@@ -70,22 +70,22 @@ def enhance_h3_dataset(input_file, output_file):
     excel_file = output_file.replace(".csv", ".xlsx")
     df.to_excel(excel_file, index=False)
 
-    print(f"\nEnhanced dataset summary:")
+    print("\nEnhanced dataset summary:")
     print(f"- Total rows: {len(df)}")
     print(f"- Total columns: {len(df.columns)}")
     print(
-        f"- New columns added: building_count (INT), latitude (FLOAT), longitude (FLOAT)"
+        "- New columns added: building_count (INT), latitude (FLOAT), longitude (FLOAT)"
     )
-    print(f"\nFiles saved:")
+    print("\nFiles saved:")
     print(f"- CSV: {output_file}")
     print(f"- Excel: {excel_file}")
 
     # Show sample data
-    print(f"\nSample data (first 5 rows):")
+    print("\nSample data (first 5 rows):")
     print(df[["id", "geom", "latitude", "longitude", "building_count"]].head())
 
     # Show data types
-    print(f"\nData types for new columns:")
+    print("\nData types for new columns:")
     print(f"- building_count: {df['building_count'].dtype}")
     print(f"- latitude: {df['latitude'].dtype}")
     print(f"- longitude: {df['longitude'].dtype}")

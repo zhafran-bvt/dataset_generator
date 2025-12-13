@@ -1,17 +1,13 @@
 import unittest
 import os
-import sys
 import random
 import numpy as np
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import shape, Point, Polygon, MultiPolygon
-from unittest.mock import patch, MagicMock, mock_open
+from shapely.geometry import Polygon, MultiPolygon
+from unittest.mock import patch, MagicMock
 import tempfile
 import json
 from datetime import datetime
-import matplotlib.pyplot as plt
-import psutil
 from hypothesis import given, settings, strategies as st
 
 # Import the generator module
@@ -1521,10 +1517,10 @@ class TestH3PropertyTests(unittest.TestCase):
         )
         # H3 may have fewer rows due to filtering, but should be close to the requested number
         self.assertLessEqual(
-            len(df_h3), num_rows, f"H3 dataset should not exceed requested rows"
+            len(df_h3), num_rows, "H3 dataset should not exceed requested rows"
         )
         self.assertLessEqual(
-            len(df_point), num_rows, f"POINT dataset should not exceed requested rows"
+            len(df_point), num_rows, "POINT dataset should not exceed requested rows"
         )
 
         # Property: The 'geom' column should exist in both datasets
