@@ -614,11 +614,15 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
         fixed_columns += ["Gender", "Occupation", "Education Level"]
     if include_economic:
         fixed_columns += ["Household Income", "Employment Status", "Access to Healthcare"]
-    max_cols = len(REALISTIC_LABELS) + len(fixed_columns)
+    
+    # Filter out any REALISTIC_LABELS that are already in fixed_columns to prevent duplicates
+    available_labels = [label for label in REALISTIC_LABELS if label not in fixed_columns]
+    
+    max_cols = len(available_labels) + len(fixed_columns)
     if cols > max_cols:
         cols = max_cols
     num_additional = cols - len(fixed_columns)
-    additional_labels = random.sample(REALISTIC_LABELS, min(num_additional, len(REALISTIC_LABELS))) if num_additional > 0 else []
+    additional_labels = random.sample(available_labels, min(num_additional, len(available_labels))) if num_additional > 0 else []
     labels = fixed_columns + additional_labels
     polygons = []
     if land_geometry:
