@@ -23,6 +23,14 @@ from functools import lru_cache
 from scipy import stats
 import matplotlib.pyplot as plt
 
+# Optional H3 support (not currently used by the generator but required by the API layer)
+try:
+    import h3  # noqa: F401
+
+    H3_AVAILABLE = True
+except ImportError:
+    H3_AVAILABLE = False
+
 # --- CONFIGURATION ---
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -201,7 +209,7 @@ def extract_polygon_coords(land_geometry):
 def random_sample_uniform(n, lon_min, lon_max, lat_min, lat_max):
     return get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
 
-def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, batch_size=1000):
+def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, batch_size=1000, land_shape=None):
     points = []
     attempts = 0
     max_attempts = n * 10
@@ -210,6 +218,10 @@ def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, b
         for point in candidates:
             if len(points) >= n:
                 break
+            if land_shape is not None:
+                if land_shape.covers(Point(point[0], point[1])):
+                    points.append(point)
+                    continue
             for poly in polygons:
                 if is_point_in_polygon(poly, point):
                     points.append(point)
@@ -220,8 +232,14 @@ def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, b
         points.extend(get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, remaining))
     return np.array(points[:n])
 
+def _point_in_any_polygon(polygons, point):
+    for poly in polygons:
+        if is_point_in_polygon(poly, point):
+            return True
+    return False
+
 def generate_random_geom_batch(params):
-    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id = params
+    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape = params
     geoms = []
     if geom_type == "POINT":
         if format_type == "WKT":
@@ -237,15 +255,35 @@ def generate_random_geom_batch(params):
         lat_extent = lat_max - lat_min
         for i in range(n):
             lon, lat = points[i]
-            width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
-            height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
-            coords = [
-                [lon, lat],
-                [lon + width, lat],
-                [lon + width, lat + height],
-                [lon, lat + height],
-                [lon, lat]
-            ]
+            coords = None
+            for _ in range(15):
+                width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
+                height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
+                candidate = [
+                    [lon, lat],
+                    [lon + width, lat],
+                    [lon + width, lat + height],
+                    [lon, lat + height],
+                    [lon, lat]
+                ]
+                candidate_ok = False
+                if land_shape is not None:
+                    candidate_ok = land_shape.covers(Polygon(candidate))
+                if not candidate_ok and polygons:
+                    candidate_ok = all(_point_in_any_polygon(polygons, pt) for pt in candidate)
+                if not polygons and land_shape is None:
+                    candidate_ok = True
+                if candidate_ok:
+                    coords = candidate
+                    break
+            if coords is None:
+                coords = [
+                    [lon, lat],
+                    [lon, lat],
+                    [lon, lat],
+                    [lon, lat],
+                    [lon, lat]
+                ]
             if format_type == "WKT":
                 coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
                 if geom_type == "POLYGON":
@@ -260,9 +298,11 @@ def generate_random_geom_batch(params):
     return geoms
 
 def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geometry, cluster_count=5, points_per_cluster=200):
-    if land_geometry:
+    land_shape = None
+    if land_geometry is not None:
         polygons = extract_polygon_coords(land_geometry)
-        centers = random_sample_in_geometry(cluster_count, polygons, lon_min, lon_max, lat_min, lat_max)
+        land_shape = land_geometry
+        centers = random_sample_in_geometry(cluster_count, polygons, lon_min, lon_max, lat_min, lat_max, land_shape=land_shape)
     else:
         centers = get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, cluster_count)
     samples = []
@@ -289,7 +329,7 @@ def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geo
     }
 
 def generate_points_for_batch(params):
-    batch_size, lon_min, lon_max, lat_min, lat_max, use_spatial_clustering, spatial_clusters, polygons = params
+    batch_size, lon_min, lon_max, lat_min, lat_max, use_spatial_clustering, spatial_clusters, polygons, land_shape = params
     if use_spatial_clustering and spatial_clusters and random.random() < spatial_clusters['use_probability']:
         samples = spatial_clusters['model'].resample(batch_size)
         points = np.column_stack((samples[0], samples[1]))
@@ -298,30 +338,33 @@ def generate_points_for_batch(params):
         if polygons:
             for i in range(len(points)):
                 is_valid = False
-                for poly in polygons:
-                    if is_point_in_polygon(poly, points[i]):
-                        is_valid = True
-                        break
+                if land_shape is not None and land_shape.covers(Point(points[i][0], points[i][1])):
+                    is_valid = True
+                else:
+                    for poly in polygons:
+                        if is_point_in_polygon(poly, points[i]):
+                            is_valid = True
+                            break
                 if not is_valid:
-                    valid_points = random_sample_in_geometry(1, polygons, lon_min, lon_max, lat_min, lat_max)
+                    valid_points = random_sample_in_geometry(1, polygons, lon_min, lon_max, lat_min, lat_max, land_shape=land_shape)
                     points[i] = valid_points[0]
-    elif polygons:
-        points = random_sample_in_geometry(batch_size, polygons, lon_min, lon_max, lat_min, lat_max)
+    elif polygons or land_shape is not None:
+        points = random_sample_in_geometry(batch_size, polygons, lon_min, lon_max, lat_min, lat_max, land_shape=land_shape)
     else:
         points = random_sample_uniform(batch_size, lon_min, lon_max, lat_min, lat_max)
     return points
 
 def generate_batch_data(batch_params):
     (start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-     polygons, labels, include_demographic, include_economic, spatial_clusters, 
+     polygons, land_shape, labels, include_demographic, include_economic, spatial_clusters, 
      correlation_engine, use_spatial_clustering, batch_id) = batch_params
     points = generate_points_for_batch((
         batch_size, lon_min, lon_max, lat_min, lat_max,
-        use_spatial_clustering, spatial_clusters, polygons
+        use_spatial_clustering, spatial_clusters, polygons, land_shape
     ))
     geoms = generate_random_geom_batch((
         geom_type, format_type, batch_size, lon_min, lon_max, lat_min, lat_max, 
-        points, batch_id
+        points, batch_id, polygons, land_shape
     ))
     ids = list(range(start_id, start_id + batch_size))
     dates = generate_random_datetimes(batch_size)
@@ -419,8 +462,13 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
     additional_labels = random.sample(REALISTIC_LABELS, min(num_additional, len(REALISTIC_LABELS))) if num_additional > 0 else []
     labels = fixed_columns + additional_labels
     polygons = []
-    if land_geometry:
-        polygons = extract_polygon_coords(land_geometry)
+    land_shape = None
+    if land_geometry is not None:
+        land_geom_obj = land_geometry
+        if hasattr(land_geometry, "geometry"):
+            land_geom_obj = unary_union(land_geometry["geometry"].values)
+        polygons = extract_polygon_coords(land_geom_obj)
+        land_shape = land_geom_obj
         logger.info(f"Extracted {len(polygons)} polygon(s) for efficient point-in-polygon testing")
     spatial_clusters = None
     if use_spatial_clustering:
@@ -455,26 +503,34 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
          lat_min, 
          lat_max,
          polygons,
+         land_shape,
          labels, 
          include_demographic, 
          include_economic,
          spatial_clusters,
          correlation_engine,
-         use_spatial_clustering,
-         i)
+        use_spatial_clustering,
+        i)
         for i in range(num_batches)
     ]
     all_data = []
     with tqdm(total=rows, desc="Generating data") as progress:
-        with ProcessPoolExecutor(max_workers=num_cores) as executor:
-            futures = [executor.submit(generate_batch_data, params) for params in batch_params]
-            for future in as_completed(futures):
-                try:
-                    batch_data = future.result()
-                    all_data.extend(batch_data)
-                    progress.update(len(batch_data))
-                except Exception as e:
-                    logger.error(f"Error in batch processing: {e}")
+        try:
+            with ProcessPoolExecutor(max_workers=num_cores) as executor:
+                futures = [executor.submit(generate_batch_data, params) for params in batch_params]
+                for future in as_completed(futures):
+                    try:
+                        batch_data = future.result()
+                        all_data.extend(batch_data)
+                        progress.update(len(batch_data))
+                    except Exception as e:
+                        logger.error(f"Error in batch processing: {e}")
+        except PermissionError:
+            logger.warning("Process pool not permitted in this environment; falling back to sequential generation.")
+            for params in batch_params:
+                batch_data = generate_batch_data(params)
+                all_data.extend(batch_data)
+                progress.update(len(batch_data))
     logger.info(f"Converting {len(all_data):,} rows to DataFrame")
     df = pd.DataFrame(all_data, columns=labels)
     for col in df.columns:
