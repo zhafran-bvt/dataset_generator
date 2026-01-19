@@ -56,7 +56,7 @@ python file_generator.py
   `yes` / `no`
 
 - **Number of Columns**:  
-  Minimum `3` (or `6/9` with demographic/economic), up to `29`
+  Minimum `3` (or `6/9` with demographic/economic), up to `35`
 
 - **Use Spatial Clustering**:  
   `yes` / `no`
@@ -126,7 +126,7 @@ Make sure the following files are in `geojson/`:
 - `Employment Status`: Full-time, Self-employed, etc.  
 - `Access to Healthcare`: True / False
 
-### Additional Columns (up to 20):
+### Additional Columns (up to 26):
 - `Population`, `Birth Rate`, `Death Rate`, `Unemployment Rate`, `Income per Capita`  
 - `GDP Growth`, `Health Index`, `Urbanization Rate`, `Poverty Rate`, `Energy Consumption`, etc.
 
@@ -168,7 +168,7 @@ This repo includes a GitHub Actions workflow to automate dataset generation.
 format_choice: 1                  # 1=WKT, 2=GeoJSON
 include_demographic: no           # yes/no
 include_economic: no              # yes/no
-num_columns: 9                    # 3–29
+num_columns: 9                    # 3–35
 use_spatial_clustering: no        # yes/no
 area_choice: 3                    # 1=Jakarta, ..., 5=Vietnam
 geojson_path: geojson/id.json     # required if area ≠ 2

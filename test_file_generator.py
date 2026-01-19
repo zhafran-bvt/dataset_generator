@@ -238,39 +238,42 @@ class TestFileGenerator(unittest.TestCase):
         lat_min, lat_max = 0, 1
         points = fg.get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
         batch_id = 0
+        polygons = []
+        land_shape = None
+        strict_land = False
         
         # Test POINT WKT
-        params = ("POINT", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("POINT", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape, strict_land)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(g.startswith("POINT (") for g in geoms))
         
         # Test POINT GeoJSON
-        params = ("POINT", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("POINT", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape, strict_land)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(json.loads(g)["type"] == "Point" for g in geoms))
         
         # Test POLYGON WKT
-        params = ("POLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("POLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape, strict_land)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(g.startswith("POLYGON ((") for g in geoms))
         
         # Test POLYGON GeoJSON
-        params = ("POLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("POLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape, strict_land)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(json.loads(g)["type"] == "Polygon" for g in geoms))
         
         # Test MULTIPOLYGON WKT
-        params = ("MULTIPOLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("MULTIPOLYGON", "WKT", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape, strict_land)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(g.startswith("MULTIPOLYGON (((") for g in geoms))
         
         # Test MULTIPOLYGON GeoJSON
-        params = ("MULTIPOLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id)
+        params = ("MULTIPOLYGON", "GeoJSON", n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape, strict_land)
         geoms = fg.generate_random_geom_batch(params)
         self.assertEqual(len(geoms), n)
         self.assertTrue(all(json.loads(g)["type"] == "MultiPolygon" for g in geoms))
@@ -319,22 +322,22 @@ class TestFileGenerator(unittest.TestCase):
         # Force using spatial clusters by setting use_probability to 1.0
         spatial_clusters['use_probability'] = 1.0
         
-        params = (batch_size, lon_min, lon_max, lat_min, lat_max, True, spatial_clusters, polygons)
+        params = (batch_size, lon_min, lon_max, lat_min, lat_max, True, spatial_clusters, polygons, self.test_polygon, False)
         points = fg.generate_points_for_batch(params)
         self.assertEqual(points.shape, (batch_size, 2))
         
         # Test without spatial clustering
-        params = (batch_size, lon_min, lon_max, lat_min, lat_max, False, spatial_clusters, polygons)
+        params = (batch_size, lon_min, lon_max, lat_min, lat_max, False, spatial_clusters, polygons, self.test_polygon, False)
         points = fg.generate_points_for_batch(params)
         self.assertEqual(points.shape, (batch_size, 2))
         
         # Test with polygons but no spatial clustering
-        params = (batch_size, lon_min, lon_max, lat_min, lat_max, False, None, polygons)
+        params = (batch_size, lon_min, lon_max, lat_min, lat_max, False, None, polygons, self.test_polygon, False)
         points = fg.generate_points_for_batch(params)
         self.assertEqual(points.shape, (batch_size, 2))
         
         # Test with no polygons and no spatial clustering
-        params = (batch_size, lon_min, lon_max, lat_min, lat_max, False, None, [])
+        params = (batch_size, lon_min, lon_max, lat_min, lat_max, False, None, [], None, False)
         points = fg.generate_points_for_batch(params)
         self.assertEqual(points.shape, (batch_size, 2))
 
@@ -354,11 +357,15 @@ class TestFileGenerator(unittest.TestCase):
         use_spatial_clustering = False
         correlation_engine = fg.CorrelationEngine(fg.VARIABLE_CORRELATIONS, fg.VALUE_RANGES)
         batch_id = 0
+        date_start = None
+        date_end = None
+        seasonality = "none"
+        seed = None
         
         batch_params = (
             start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max,
-            polygons, labels, include_demographic, include_economic, spatial_clusters,
-            correlation_engine, use_spatial_clustering, batch_id
+            polygons, self.test_polygon, labels, include_demographic, include_economic, spatial_clusters,
+            correlation_engine, use_spatial_clustering, False, date_start, date_end, seasonality, seed, batch_id
         )
         
         data = fg.generate_batch_data(batch_params)

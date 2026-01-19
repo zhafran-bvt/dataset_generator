@@ -7,6 +7,7 @@ import numpy as np
 from shapely.geometry import shape, Point, Polygon, MultiPolygon
 from shapely.ops import unary_union
 from shapely.wkt import loads
+from shapely.prepared import prep
 from tqdm import tqdm
 from shapely.strtree import STRtree
 from datetime import datetime, timedelta
@@ -51,7 +52,9 @@ REALISTIC_LABELS = [
     "Life Expectancy", "Poverty Rate", "Employment Rate",
     "Literacy Rate", "Housing Density", "Public Transport Usage",
     "Internet Penetration", "Energy Consumption",
-    "Water Access", "Sanitation Access"
+    "Water Access", "Sanitation Access",
+    "Median Age", "Household Size", "Housing Cost Index",
+    "Hospital Beds per 1k", "Air Quality Index", "CO2 Emissions per Capita"
 ]
 VALUE_RANGES = {
     "Population": (1000, 1000000),
@@ -74,7 +77,13 @@ VALUE_RANGES = {
     "Energy Consumption": (100, 10000),
     "Water Access": (50, 100),
     "Sanitation Access": (50, 100),
-    "Household Income": (0, 1000000)
+    "Household Income": (0, 1000000),
+    "Median Age": (15, 50),
+    "Household Size": (1, 7),
+    "Housing Cost Index": (50, 200),
+    "Hospital Beds per 1k": (0.2, 10.0),
+    "Air Quality Index": (0, 300),
+    "CO2 Emissions per Capita": (0.5, 20.0)
 }
 VARIABLE_CORRELATIONS = [
     ("Income per Capita", "Education Level", 0.7),
@@ -93,11 +102,18 @@ VARIABLE_CORRELATIONS = [
     ("Urbanization Rate", "Internet Penetration", 0.65),
     ("Urbanization Rate", "Public Transport Usage", 0.7),
     ("Urbanization Rate", "Energy Consumption", 0.55),
+    ("Urbanization Rate", "Housing Cost Index", 0.6),
     ("Population", "Housing Density", 0.6),
     ("Housing Density", "Public Transport Usage", 0.5),
+    ("Housing Density", "Household Size", 0.45),
     ("Employment Rate", "Unemployment Rate", -0.9),
     ("GDP Growth", "Employment Rate", 0.6),
-    ("GDP Growth", "Unemployment Rate", -0.5)
+    ("GDP Growth", "Unemployment Rate", -0.5),
+    ("Life Expectancy", "Median Age", 0.4),
+    ("Birth Rate", "Median Age", -0.6),
+    ("Health Index", "Hospital Beds per 1k", 0.5),
+    ("Air Quality Index", "Health Index", -0.5),
+    ("Energy Consumption", "CO2 Emissions per Capita", 0.7)
 ]
 BOUNDING_BOXES = {
     1: {"name": "Jakarta", "lon_min": 106.65, "lon_max": 106.95, "lat_min": -6.35, "lat_max": -6.1},
@@ -126,13 +142,20 @@ def load_config(config_path):
         return json.load(f)
 
 class CorrelationEngine:
-    def __init__(self, correlations, value_ranges):
+    def __init__(self, correlations, value_ranges, distribution_mode="uniform"):
         self.correlations = correlations
         self.value_ranges = value_ranges
+        self.distribution_mode = (distribution_mode or "uniform").lower()
+    def sample_value(self, min_val, max_val):
+        unit_value = sample_unit_distribution(1, self.distribution_mode)[0]
+        return unit_value * (max_val - min_val) + min_val
     def generate_batch_values(self, labels, batch_size=10000, seed=None):
         if seed is not None:
             np.random.seed(seed)
-        values = {label: np.random.random(batch_size) for label in labels if label in self.value_ranges}
+        values = {
+            label: sample_unit_distribution(batch_size, self.distribution_mode)
+            for label in labels if label in self.value_ranges
+        }
         for _ in range(3):
             for var1, var2, corr_strength in self.correlations:
                 if var1 in values and var2 in values:
@@ -168,15 +191,45 @@ class CorrelationEngine:
                 result[label] = np.round(result[label], 2)
         return result
 
-def generate_random_datetimes(n):
-    start_ts = datetime(2025, 1, 1, 0, 0, 0).timestamp()
-    end_ts = datetime(2025, 12, 31, 23, 59, 59).timestamp()
-    random_ts = np.random.uniform(start_ts, end_ts, n)
-    dates = []
-    for ts in random_ts:
-        dt = datetime.fromtimestamp(ts)
-        dates.append(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
-    return dates
+def parse_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned.endswith("Z"):
+            cleaned = cleaned[:-1]
+        try:
+            return datetime.fromisoformat(cleaned)
+        except ValueError:
+            logger.warning(f"Invalid datetime format: {value}. Using defaults.")
+            return None
+    return None
+
+def generate_random_datetimes(n, start_dt=None, end_dt=None, seasonality="none"):
+    start_dt = parse_datetime(start_dt) or datetime(2025, 1, 1, 0, 0, 0)
+    end_dt = parse_datetime(end_dt) or datetime(2025, 12, 31, 23, 59, 59)
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+    start_date = start_dt.date()
+    end_date = end_dt.date()
+    total_days = (end_date - start_date).days + 1
+    dates = [start_date + timedelta(days=i) for i in range(total_days)]
+    weights = np.ones(total_days, dtype=float)
+    if seasonality == "weekday":
+        weights = np.array([1.0 if d.weekday() < 5 else 0.4 for d in dates], dtype=float)
+    elif seasonality == "monthly":
+        weights = np.array([1.5 if d.month in (6, 7, 8) else 1.0 for d in dates], dtype=float)
+    weights /= weights.sum()
+    day_indices = np.random.choice(total_days, size=n, p=weights)
+    seconds = np.random.randint(0, 86400, size=n)
+    dates_out = []
+    for i in range(n):
+        day = dates[day_indices[i]]
+        dt = datetime.combine(day, datetime.min.time()) + timedelta(seconds=int(seconds[i]))
+        dates_out.append(dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    return dates_out
 
 @numba.njit
 def is_point_in_polygon(polygon_coords, point):
@@ -209,25 +262,57 @@ def extract_polygon_coords(land_geometry):
 def random_sample_uniform(n, lon_min, lon_max, lat_min, lat_max):
     return get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, n)
 
-def random_sample_in_geometry(n, polygons, lon_min, lon_max, lat_min, lat_max, batch_size=1000, land_shape=None):
+def _normalize_to_unit(values):
+    min_val = float(np.min(values))
+    max_val = float(np.max(values))
+    if max_val == min_val:
+        return np.zeros_like(values)
+    return (values - min_val) / (max_val - min_val)
+
+def sample_unit_distribution(n, mode):
+    if mode == "beta":
+        return np.random.beta(2.0, 5.0, n)
+    if mode == "normal":
+        return _normalize_to_unit(np.random.normal(0.0, 1.0, n))
+    if mode == "lognormal":
+        return _normalize_to_unit(np.random.lognormal(mean=0.0, sigma=1.0, size=n))
+    return np.random.random(n)
+
+def random_sample_in_geometry(
+    n,
+    polygons,
+    lon_min,
+    lon_max,
+    lat_min,
+    lat_max,
+    batch_size=1000,
+    land_shape=None,
+    land_prepared=None,
+    strict_land=False,
+):
     points = []
     attempts = 0
-    max_attempts = n * 10
+    max_attempts = n * (50 if strict_land else 10)
+    if land_prepared is None and land_shape is not None:
+        land_prepared = prep(land_shape)
     while len(points) < n and attempts < max_attempts:
         candidates = get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, min(batch_size, n - len(points)))
         for point in candidates:
             if len(points) >= n:
                 break
-            if land_shape is not None:
-                if land_shape.covers(Point(point[0], point[1])):
+            if land_prepared is not None:
+                if land_prepared.covers(Point(point[0], point[1])):
                     points.append(point)
                     continue
-            for poly in polygons:
-                if is_point_in_polygon(poly, point):
-                    points.append(point)
-                    break
+            if land_prepared is None and polygons:
+                for poly in polygons:
+                    if is_point_in_polygon(poly, point):
+                        points.append(point)
+                        break
         attempts += len(candidates)
     if len(points) < n:
+        if strict_land and (land_prepared is not None or polygons):
+            raise RuntimeError("Unable to sample enough land points within max attempts.")
         remaining = n - len(points)
         points.extend(get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, remaining))
     return np.array(points[:n])
@@ -238,8 +323,39 @@ def _point_in_any_polygon(polygons, point):
             return True
     return False
 
+def _build_rect_around_point(lon, lat, width, height, lon_min, lon_max, lat_min, lat_max):
+    half_w = width / 2.0
+    half_h = height / 2.0
+    min_x = max(lon_min, lon - half_w)
+    max_x = min(lon_max, lon + half_w)
+    min_y = max(lat_min, lat - half_h)
+    max_y = min(lat_max, lat + half_h)
+    if max_x <= min_x or max_y <= min_y:
+        return None
+    return [
+        [min_x, min_y],
+        [max_x, min_y],
+        [max_x, max_y],
+        [min_x, max_y],
+        [min_x, min_y],
+    ]
+
 def generate_random_geom_batch(params):
-    geom_type, format_type, n, lon_min, lon_max, lat_min, lat_max, points, batch_id, polygons, land_shape = params
+    (
+        geom_type,
+        format_type,
+        n,
+        lon_min,
+        lon_max,
+        lat_min,
+        lat_max,
+        points,
+        batch_id,
+        polygons,
+        land_shape,
+        strict_land,
+    ) = params
+    land_prepared = prep(land_shape) if land_shape is not None else None
     geoms = []
     if geom_type == "POINT":
         if format_type == "WKT":
@@ -256,34 +372,36 @@ def generate_random_geom_batch(params):
         for i in range(n):
             lon, lat = points[i]
             coords = None
+            width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
+            height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
             for _ in range(15):
-                width = random.uniform(lon_extent * 0.005, lon_extent * 0.05)
-                height = random.uniform(lat_extent * 0.005, lat_extent * 0.05)
-                candidate = [
-                    [lon, lat],
-                    [lon + width, lat],
-                    [lon + width, lat + height],
-                    [lon, lat + height],
-                    [lon, lat]
-                ]
+                candidate = _build_rect_around_point(
+                    lon, lat, width, height, lon_min, lon_max, lat_min, lat_max
+                )
+                if candidate is None:
+                    width *= 0.5
+                    height *= 0.5
+                    continue
                 candidate_ok = False
-                if land_shape is not None:
-                    candidate_ok = land_shape.covers(Polygon(candidate))
-                if not candidate_ok and polygons:
+                if land_prepared is not None:
+                    candidate_ok = land_prepared.covers(Polygon(candidate))
+                if not candidate_ok and land_prepared is None and polygons:
                     candidate_ok = all(_point_in_any_polygon(polygons, pt) for pt in candidate)
-                if not polygons and land_shape is None:
+                if land_prepared is None and not polygons:
                     candidate_ok = True
                 if candidate_ok:
                     coords = candidate
                     break
+                width *= 0.5
+                height *= 0.5
             if coords is None:
-                coords = [
-                    [lon, lat],
-                    [lon, lat],
-                    [lon, lat],
-                    [lon, lat],
-                    [lon, lat]
-                ]
+                min_size = min(lon_extent, lat_extent) * 0.0005
+                min_size = max(min_size, 1e-6)
+                coords = _build_rect_around_point(
+                    lon, lat, min_size, min_size, lon_min, lon_max, lat_min, lat_max
+                )
+                if coords is None or (strict_land and land_prepared is not None and not land_prepared.covers(Polygon(coords))):
+                    raise RuntimeError("Unable to generate land-only polygon geometry.")
             if format_type == "WKT":
                 coord_str = ", ".join([f"{x:.6f} {y:.6f}" for x, y in coords])
                 if geom_type == "POLYGON":
@@ -297,12 +415,32 @@ def generate_random_geom_batch(params):
                     geoms.append(json.dumps({"type": "MultiPolygon", "coordinates": [[coords]]}))
     return geoms
 
-def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geometry, cluster_count=5, points_per_cluster=200):
+def create_spatial_clustering_model(
+    lon_min,
+    lon_max,
+    lat_min,
+    lat_max,
+    land_geometry,
+    cluster_count=5,
+    points_per_cluster=200,
+    strict_land=False,
+):
     land_shape = None
     if land_geometry is not None:
         polygons = extract_polygon_coords(land_geometry)
         land_shape = land_geometry
-        centers = random_sample_in_geometry(cluster_count, polygons, lon_min, lon_max, lat_min, lat_max, land_shape=land_shape)
+        land_prepared = prep(land_shape)
+        centers = random_sample_in_geometry(
+            cluster_count,
+            polygons,
+            lon_min,
+            lon_max,
+            lat_min,
+            lat_max,
+            land_shape=land_shape,
+            land_prepared=land_prepared,
+            strict_land=strict_land,
+        )
     else:
         centers = get_random_points_in_bbox(lon_min, lon_max, lat_min, lat_max, cluster_count)
     samples = []
@@ -329,45 +467,102 @@ def create_spatial_clustering_model(lon_min, lon_max, lat_min, lat_max, land_geo
     }
 
 def generate_points_for_batch(params):
-    batch_size, lon_min, lon_max, lat_min, lat_max, use_spatial_clustering, spatial_clusters, polygons, land_shape = params
+    (
+        batch_size,
+        lon_min,
+        lon_max,
+        lat_min,
+        lat_max,
+        use_spatial_clustering,
+        spatial_clusters,
+        polygons,
+        land_shape,
+        strict_land,
+    ) = params
+    land_prepared = prep(land_shape) if land_shape is not None else None
     if use_spatial_clustering and spatial_clusters and random.random() < spatial_clusters['use_probability']:
         samples = spatial_clusters['model'].resample(batch_size)
         points = np.column_stack((samples[0], samples[1]))
         points[:, 0] = np.clip(points[:, 0], lon_min, lon_max)
         points[:, 1] = np.clip(points[:, 1], lat_min, lat_max)
-        if polygons:
+        if polygons or land_prepared is not None:
             for i in range(len(points)):
                 is_valid = False
-                if land_shape is not None and land_shape.covers(Point(points[i][0], points[i][1])):
+                if land_prepared is not None and land_prepared.covers(Point(points[i][0], points[i][1])):
                     is_valid = True
-                else:
+                elif land_prepared is None:
                     for poly in polygons:
                         if is_point_in_polygon(poly, points[i]):
                             is_valid = True
                             break
                 if not is_valid:
-                    valid_points = random_sample_in_geometry(1, polygons, lon_min, lon_max, lat_min, lat_max, land_shape=land_shape)
+                    valid_points = random_sample_in_geometry(
+                        1,
+                        polygons,
+                        lon_min,
+                        lon_max,
+                        lat_min,
+                        lat_max,
+                        land_shape=land_shape,
+                        land_prepared=land_prepared,
+                        strict_land=strict_land,
+                    )
                     points[i] = valid_points[0]
     elif polygons or land_shape is not None:
-        points = random_sample_in_geometry(batch_size, polygons, lon_min, lon_max, lat_min, lat_max, land_shape=land_shape)
+        points = random_sample_in_geometry(
+            batch_size,
+            polygons,
+            lon_min,
+            lon_max,
+            lat_min,
+            lat_max,
+            land_shape=land_shape,
+            land_prepared=land_prepared,
+            strict_land=strict_land,
+        )
     else:
         points = random_sample_uniform(batch_size, lon_min, lon_max, lat_min, lat_max)
     return points
 
 def generate_batch_data(batch_params):
-    (start_id, batch_size, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-     polygons, land_shape, labels, include_demographic, include_economic, spatial_clusters, 
-     correlation_engine, use_spatial_clustering, batch_id) = batch_params
+    (
+        start_id,
+        batch_size,
+        geom_type,
+        format_type,
+        lon_min,
+        lon_max,
+        lat_min,
+        lat_max,
+        polygons,
+        land_shape,
+        labels,
+        include_demographic,
+        include_economic,
+        spatial_clusters,
+        correlation_engine,
+        use_spatial_clustering,
+        strict_land,
+        date_start,
+        date_end,
+        seasonality,
+        seed,
+        batch_id,
+    ) = batch_params
+    if seed is not None:
+        batch_seed = seed + batch_id
+        random.seed(batch_seed)
+        np.random.seed(batch_seed)
     points = generate_points_for_batch((
         batch_size, lon_min, lon_max, lat_min, lat_max,
-        use_spatial_clustering, spatial_clusters, polygons, land_shape
+        use_spatial_clustering, spatial_clusters, polygons, land_shape, strict_land
     ))
     geoms = generate_random_geom_batch((
         geom_type, format_type, batch_size, lon_min, lon_max, lat_min, lat_max, 
-        points, batch_id, polygons, land_shape
+        points, batch_id, polygons, land_shape, strict_land
     ))
     ids = list(range(start_id, start_id + batch_size))
-    dates = generate_random_datetimes(batch_size)
+    dates = generate_random_datetimes(batch_size, date_start, date_end, seasonality)
     correlated_values = correlation_engine.generate_batch_values(labels, batch_size, seed=start_id)
     data = []
     for i in range(batch_size):
@@ -390,7 +585,7 @@ def generate_batch_data(batch_params):
                     row[label] = correlated_values[label][i]
                 else:
                     min_val, max_val = VALUE_RANGES.get(label, (0, 100))
-                    row[label] = round(random.uniform(min_val, max_val), 2)
+                    row[label] = round(correlation_engine.sample_value(min_val, max_val), 2)
         data.append(row)
     return data
 
@@ -428,6 +623,62 @@ def save_files_chunked(df, filename_prefix, chunk_size=100000):
         logger.info(f"CSV data saved in {num_chunks} chunks in the '{output_dir}' directory.")
         logger.warning("Excel file not created for chunked data (dataset too large).")
 
+def apply_data_realism_options(
+    df,
+    noise_level=0.0,
+    outlier_rate=0.0,
+    outlier_scale=2.5,
+    missing_rate=0.0,
+):
+    if noise_level > 0:
+        for col in df.columns:
+            if col in ["id", "geom", "date_created"]:
+                continue
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                continue
+            if col in VALUE_RANGES:
+                min_val, max_val = VALUE_RANGES[col]
+                scale = (max_val - min_val) * noise_level
+            else:
+                scale = float(df[col].std() or 0)
+            if scale > 0:
+                df[col] = df[col] + np.random.normal(0, scale, len(df))
+            if col in VALUE_RANGES:
+                min_val, max_val = VALUE_RANGES[col]
+                df[col] = df[col].clip(min_val, max_val)
+    if outlier_rate > 0:
+        outlier_rate = min(max(outlier_rate, 0.0), 1.0)
+        for col in df.columns:
+            if col in ["id", "geom", "date_created"]:
+                continue
+            if not pd.api.types.is_numeric_dtype(df[col]):
+                continue
+            count = int(len(df) * outlier_rate)
+            if count <= 0:
+                continue
+            idx = np.random.choice(df.index, size=count, replace=False)
+            if col in VALUE_RANGES:
+                min_val, max_val = VALUE_RANGES[col]
+                span = max_val - min_val
+                direction = np.random.choice([-1.0, 1.0], size=count)
+                df.loc[idx, col] = df.loc[idx, col] + direction * span * outlier_scale
+                df.loc[idx, col] = df.loc[idx, col].clip(min_val, max_val)
+            else:
+                scale = float(df[col].std() or 0)
+                if scale > 0:
+                    df.loc[idx, col] = df.loc[idx, col] + np.random.normal(0, scale * outlier_scale, count)
+    if missing_rate > 0:
+        missing_rate = min(max(missing_rate, 0.0), 1.0)
+        for col in df.columns:
+            if col in ["id", "geom", "date_created"]:
+                continue
+            mask = np.random.random(len(df)) < missing_rate
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df.loc[mask, col] = np.nan
+            else:
+                df.loc[mask, col] = None
+    return df
+
 def analyze_correlations(df, sample_size=10000):
     if len(df) > sample_size:
         logger.info(f"Sampling {sample_size:,} rows for correlation analysis")
@@ -447,9 +698,33 @@ def analyze_correlations(df, sample_size=10000):
             logger.info(f"{var1} vs {var2:<20} | {target_corr:8.2f} | {actual_corr:8.2f}")
     logger.info("-" * 50)
 
-def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-                              land_geometry=None, include_demographic=False, include_economic=False, 
-                              use_spatial_clustering=False, cluster_count=5, points_per_cluster=200):
+def generate_parallel_dataframe(
+    rows,
+    cols,
+    geom_type,
+    format_type,
+    lon_min,
+    lon_max,
+    lat_min,
+    lat_max,
+    land_geometry=None,
+    include_demographic=False,
+    include_economic=False,
+    use_spatial_clustering=False,
+    cluster_count=5,
+    points_per_cluster=200,
+    strict_land=False,
+    distribution_mode="uniform",
+    noise_level=0.0,
+    outlier_rate=0.0,
+    outlier_scale=2.5,
+    missing_rate=0.0,
+    spatial_weighting="none",
+    seed=None,
+    date_start=None,
+    date_end=None,
+    seasonality="none",
+):
     fixed_columns = ["id", "geom", "date_created"]
     if include_demographic:
         fixed_columns += ["Gender", "Occupation", "Education Level"]
@@ -470,12 +745,21 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
         polygons = extract_polygon_coords(land_geom_obj)
         land_shape = land_geom_obj
         logger.info(f"Extracted {len(polygons)} polygon(s) for efficient point-in-polygon testing")
+    spatial_weighting = (spatial_weighting or "none").lower()
+    if spatial_weighting == "urban_bias":
+        use_spatial_clustering = True
+        cluster_count = max(2, cluster_count // 2)
+        points_per_cluster = max(points_per_cluster, 300)
+    elif spatial_weighting == "rural_bias":
+        use_spatial_clustering = True
+        cluster_count = max(6, cluster_count * 2)
+        points_per_cluster = max(50, points_per_cluster // 2)
     spatial_clusters = None
     if use_spatial_clustering:
         logger.info("Creating spatial clustering model...")
         spatial_clusters = create_spatial_clustering_model(
             lon_min, lon_max, lat_min, lat_max, land_geometry, 
-            cluster_count, points_per_cluster
+            cluster_count, points_per_cluster, strict_land
         )
         logger.info(f"Created model with {len(spatial_clusters['centers'])} population clusters")
     system_cores = mp.cpu_count()
@@ -491,7 +775,18 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
     if rows > 1000000:
         batch_size = min(50000, batch_size)
     logger.info(f"Using batch size of {batch_size:,} rows")
-    correlation_engine = CorrelationEngine(VARIABLE_CORRELATIONS, VALUE_RANGES)
+    distribution_mode = (distribution_mode or "uniform").lower()
+    seasonality = (seasonality or "none").lower()
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+    correlation_engine = CorrelationEngine(
+        VARIABLE_CORRELATIONS,
+        VALUE_RANGES,
+        distribution_mode=distribution_mode,
+    )
+    parsed_start = parse_datetime(date_start)
+    parsed_end = parse_datetime(date_end)
     num_batches = math.ceil(rows / batch_size)
     batch_params = [
         (i * batch_size + 1,
@@ -510,6 +805,11 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
          spatial_clusters,
          correlation_engine,
         use_spatial_clustering,
+        strict_land,
+        parsed_start,
+        parsed_end,
+        seasonality,
+        seed,
         i)
         for i in range(num_batches)
     ]
@@ -538,6 +838,13 @@ def generate_parallel_dataframe(rows, cols, geom_type, format_type, lon_min, lon
             df[col] = df[col].astype('int32')
         elif col in ["Household Income", "Population"]:
             df[col] = df[col].astype('float32')
+    df = apply_data_realism_options(
+        df,
+        noise_level=noise_level,
+        outlier_rate=outlier_rate,
+        outlier_scale=outlier_scale,
+        missing_rate=missing_rate,
+    )
     logger.info("Analyzing correlations in generated data...")
     analyze_correlations(df)
     return df
@@ -810,6 +1117,23 @@ if __name__ == "__main__":
         use_spatial_clustering = config['use_spatial_clustering'].lower() == 'yes'
         area_choice = config['area_choice']
         geojson_path = config.get('geojson_path', '')
+        strict_land = config.get('strict_land', False)
+        if isinstance(strict_land, str):
+            strict_land = strict_land.lower() == 'yes'
+        else:
+            strict_land = bool(strict_land)
+        distribution_mode = config.get('distribution_mode', 'uniform')
+        noise_level = float(config.get('noise_level', 0.0))
+        outlier_rate = float(config.get('outlier_rate', 0.0))
+        outlier_scale = float(config.get('outlier_scale', 2.5))
+        missing_rate = float(config.get('missing_rate', 0.0))
+        spatial_weighting = config.get('spatial_weighting', 'none')
+        seed = config.get('seed', None)
+        if seed is not None:
+            seed = int(seed)
+        date_start = config.get('date_start', None)
+        date_end = config.get('date_end', None)
+        seasonality = config.get('seasonality', 'none')
         num_rows = config['num_rows']
         use_chunking = config['use_chunking'].lower() == 'yes'
         geometry_type = config['geometry_type']
@@ -829,6 +1153,19 @@ if __name__ == "__main__":
         geojson_path = ""
         if area_choice in [1, 3, 4, 5]:
             geojson_path = validate_input(f"Enter path to GeoJSON file for {BOUNDING_BOXES[area_choice]['name']} land boundaries (e.g., geojson/id-jk.min.geojson): ", None, str, allow_empty=True)
+        strict_land = False
+        if geojson_path:
+            strict_land = validate_input("Strictly constrain to land only (no ocean fallback)? (yes/no): ", ['yes', 'no']).lower() == 'yes'
+        distribution_mode = "uniform"
+        noise_level = 0.0
+        outlier_rate = 0.0
+        outlier_scale = 2.5
+        missing_rate = 0.0
+        spatial_weighting = "none"
+        seed = None
+        date_start = None
+        date_end = None
+        seasonality = "none"
         num_rows = validate_input("Enter number of rows: ", None, int)
         chunking_threshold = 100000
         use_chunking = True
@@ -852,7 +1189,18 @@ if __name__ == "__main__":
         land_geometry = unary_union(land_geometry['geometry'].values)
     df = generate_parallel_dataframe(
         num_rows, num_columns, geom_type, format_type, lon_min, lon_max, lat_min, lat_max, 
-        land_geometry, include_demographic, include_economic, use_spatial_clustering
+        land_geometry, include_demographic, include_economic, use_spatial_clustering,
+        strict_land=strict_land,
+        distribution_mode=distribution_mode,
+        noise_level=noise_level,
+        outlier_rate=outlier_rate,
+        outlier_scale=outlier_scale,
+        missing_rate=missing_rate,
+        spatial_weighting=spatial_weighting,
+        seed=seed,
+        date_start=date_start,
+        date_end=date_end,
+        seasonality=seasonality,
     )
     df, validation_results = validate_generated_data(
         df, geom_type, format_type, lon_min, lon_max, lat_min, lat_max
